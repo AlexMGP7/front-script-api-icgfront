@@ -1,0 +1,13 @@
+a = Analysis(
+    ['syncICGF.py'],
+    pathex=[],
+    binaries=[],
+    datas=[('icon.png', '.')],
+    hiddenimports=['schedule'],
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+    optimize=0,
+)
