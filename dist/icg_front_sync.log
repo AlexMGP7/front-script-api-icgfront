@@ -1,70 +1,26 @@
-2025-07-31 15:30:52,380 - WARNING - No se encontró 'C:\Users\RedesIP\Proyectos\APIs\front-script-api\dist\config.ini'. Iniciando GUI de configuración.
-2025-07-31 15:31:14,072 - INFO - Configuración no encontrada. El programa se cerrará.
-2025-07-31 15:31:17,861 - INFO - Archivo de configuración 'C:\Users\RedesIP\Proyectos\APIs\front-script-api\dist\config.ini' encontrado. Iniciando servicio.
-2025-07-31 15:31:17,891 - INFO - Servicio de sincronización iniciado. Primera ejecución inmediata.
-2025-07-31 15:31:17,893 - INFO - --- Iniciando ciclo de sincronización ---
-2025-07-31 15:31:18,008 - INFO - Se obtuvieron 2 registros de la consulta.
-2025-07-31 15:31:18,010 - INFO - -> Se encontraron 2 registros. Mostrando detalle:
-2025-07-31 15:31:18,011 - INFO -     {'Tienda': 'Perfumes CCS La Bandera Ventas', 'Caja': None, 'Numero_de_Facturas': 0, 'Importe_Facturas': 0.0, 'Numero_de_Compras': 6, 'Importe_Compras': 15441.920000000006, 'Transacciones_Totales': 0, 'Transacciones_Pendientes': 0}
-2025-07-31 15:31:18,011 - INFO -     {'Tienda': 'Perfumes CCS La Bandera Ventas', 'Caja': 'TS1', 'Numero_de_Facturas': 1, 'Importe_Facturas': 100.0, 'Numero_de_Compras': 0, 'Importe_Compras': 0.0, 'Transacciones_Totales': 2, 'Transacciones_Pendientes': 1}
-2025-07-31 15:31:18,011 - INFO - --- Fin del detalle de datos ---
-2025-07-31 15:31:18,011 - INFO - --- Ciclo de sincronización finalizado ---
-2025-07-31 15:34:00,721 - WARNING - No se encontró 'C:\Users\RedesIP\Proyectos\APIs\front-script-api\dist\config.ini'. Iniciando GUI de configuración.
-2025-07-31 15:34:16,109 - INFO - Configuración no encontrada. El programa se cerrará.
-2025-07-31 15:34:31,691 - INFO - Archivo de configuración 'C:\Users\RedesIP\Proyectos\APIs\front-script-api\dist\config.ini' encontrado. Iniciando servicio.
-2025-07-31 15:34:31,731 - INFO - Servicio de sincronización iniciado. Primera ejecución inmediata.
-2025-07-31 15:34:31,733 - INFO - --- Iniciando ciclo de sincronización ---
-2025-07-31 15:34:31,862 - INFO - Se obtuvieron 2 registros de la consulta.
-2025-07-31 15:34:31,864 - INFO - -> Se encontraron 2 registros. Mostrando detalle:
-2025-07-31 15:34:31,865 - INFO -     {'Tienda': 'Perfumes CCS La Bandera Ventas', 'Caja': None, 'Numero_de_Facturas': 0, 'Importe_Facturas': 0.0, 'Numero_de_Compras': 6, 'Importe_Compras': 15441.920000000006, 'Transacciones_Totales': 0, 'Transacciones_Pendientes': 0}
-2025-07-31 15:34:31,865 - INFO -     {'Tienda': 'Perfumes CCS La Bandera Ventas', 'Caja': 'TS1', 'Numero_de_Facturas': 1, 'Importe_Facturas': 100.0, 'Numero_de_Compras': 0, 'Importe_Compras': 0.0, 'Transacciones_Totales': 2, 'Transacciones_Pendientes': 1}
-2025-07-31 15:34:31,865 - INFO - --- Fin del detalle de datos ---
-2025-07-31 15:34:31,865 - INFO - --- Ciclo de sincronización finalizado ---
-2025-07-31 15:34:54,516 - INFO - Solicitud de salida recibida.
-2025-07-31 15:34:54,518 - INFO - Aplicación cerrada.
-2025-07-31 15:35:05,709 - INFO - Solicitud de salida recibida.
-2025-07-31 15:35:05,709 - INFO - Aplicación cerrada.
-2025-07-31 16:53:43,554 - INFO - Archivo de configuración 'C:\Users\RedesIP\Proyectos\APIs\front-script-api\dist\config.ini' encontrado. Iniciando servicio.
-2025-07-31 16:53:43,588 - INFO - Servicio de sincronización iniciado. Primera ejecución inmediata.
-2025-07-31 16:53:43,589 - INFO - --- Iniciando ciclo de sincronización ---
-2025-07-31 16:53:43,745 - INFO - Se obtuvieron 2 registros de la consulta.
-2025-07-31 16:53:43,747 - INFO - -> Se encontraron 2 registros. Mostrando detalle:
-2025-07-31 16:53:43,747 - INFO -     {'Tienda': 'Perfumes CCS La Bandera Ventas', 'Caja': None, 'Numero_de_Facturas': 0, 'Importe_Facturas': 0.0, 'Numero_de_Compras': 6, 'Importe_Compras': 15441.920000000006, 'Transacciones_Totales': 0, 'Transacciones_Pendientes': 0}
-2025-07-31 16:53:43,747 - INFO -     {'Tienda': 'Perfumes CCS La Bandera Ventas', 'Caja': 'TS1', 'Numero_de_Facturas': 1, 'Importe_Facturas': 100.0, 'Numero_de_Compras': 0, 'Importe_Compras': 0.0, 'Transacciones_Totales': 2, 'Transacciones_Pendientes': 1}
-2025-07-31 16:53:43,747 - INFO - --- Fin del detalle de datos ---
-2025-07-31 16:53:43,748 - INFO - --- Ciclo de sincronización finalizado ---
-2025-07-31 16:56:48,182 - WARNING - No se encontró 'C:\Users\RedesIP\Proyectos\APIs\front-script-api\dist\config.ini'. Iniciando GUI de configuración.
-2025-07-31 16:57:16,239 - INFO - Configuración no encontrada. El programa se cerrará.
-2025-07-31 16:57:21,269 - INFO - Archivo de configuración 'C:\Users\RedesIP\Proyectos\APIs\front-script-api\dist\config.ini' encontrado. Iniciando servicio.
-2025-07-31 16:57:21,303 - INFO - Servicio de sincronización iniciado. Primera ejecución inmediata.
-2025-07-31 16:57:21,304 - INFO - --- Iniciando ciclo de sincronización ---
-2025-07-31 16:57:21,394 - INFO - Se obtuvieron 2 registros de la consulta.
-2025-07-31 16:57:21,395 - INFO - -> Se encontraron 2 registros. Mostrando detalle:
-2025-07-31 16:57:21,396 - INFO -     {'Tienda': 'Perfumes CCS La Bandera Ventas', 'Caja': None, 'Numero_de_Facturas': 0, 'Importe_Facturas': 0.0, 'Numero_de_Compras': 6, 'Importe_Compras': 15441.920000000006, 'Transacciones_Totales': 0, 'Transacciones_Pendientes': 0}
-2025-07-31 16:57:21,396 - INFO -     {'Tienda': 'Perfumes CCS La Bandera Ventas', 'Caja': 'TS1', 'Numero_de_Facturas': 1, 'Importe_Facturas': 100.0, 'Numero_de_Compras': 0, 'Importe_Compras': 0.0, 'Transacciones_Totales': 2, 'Transacciones_Pendientes': 1}
-2025-07-31 16:57:21,396 - INFO - --- Fin del detalle de datos ---
-2025-07-31 16:57:21,396 - INFO - --- Ciclo de sincronización finalizado ---
-2025-07-31 16:58:13,314 - INFO - Solicitud de salida recibida.
-2025-07-31 16:58:13,314 - INFO - Aplicación cerrada.
-2025-07-31 16:58:50,825 - INFO - Solicitud de salida recibida.
-2025-07-31 16:58:50,826 - INFO - Aplicación cerrada.
-2025-07-31 16:58:55,060 - INFO - Archivo de configuración 'C:\Users\RedesIP\Proyectos\APIs\front-script-api\dist\config.ini' encontrado. Iniciando servicio.
-2025-07-31 16:58:55,094 - INFO - Servicio de sincronización iniciado. Primera ejecución inmediata.
-2025-07-31 16:58:55,096 - INFO - --- Iniciando ciclo de sincronización ---
-2025-07-31 16:58:55,219 - INFO - Se obtuvieron 2 registros de la consulta.
-2025-07-31 16:58:55,221 - INFO - -> Se encontraron 2 registros. Mostrando detalle:
-2025-07-31 16:58:55,222 - INFO -     {'Tienda': 'Perfumes CCS La Bandera Ventas', 'Caja': None, 'Numero_de_Facturas': 0, 'Importe_Facturas': 0.0, 'Numero_de_Compras': 6, 'Importe_Compras': 15441.920000000006, 'Transacciones_Totales': 0, 'Transacciones_Pendientes': 0}
-2025-07-31 16:58:55,222 - INFO -     {'Tienda': 'Perfumes CCS La Bandera Ventas', 'Caja': 'TS1', 'Numero_de_Facturas': 1, 'Importe_Facturas': 100.0, 'Numero_de_Compras': 0, 'Importe_Compras': 0.0, 'Transacciones_Totales': 2, 'Transacciones_Pendientes': 1}
-2025-07-31 16:58:55,222 - INFO - --- Fin del detalle de datos ---
-2025-07-31 16:58:55,222 - INFO - --- Ciclo de sincronización finalizado ---
-2025-07-31 16:59:11,714 - INFO - Solicitud de salida recibida.
-2025-07-31 16:59:11,714 - INFO - Aplicación cerrada.
-2025-07-31 17:02:19,597 - INFO - Archivo de configuración 'C:\Users\RedesIP\Proyectos\APIs\front-script-api\dist\config.ini' encontrado. Iniciando servicio.
-2025-07-31 17:02:19,626 - INFO - Servicio de sincronización iniciado. Primera ejecución inmediata.
-2025-07-31 17:02:19,626 - INFO - --- Iniciando ciclo de sincronización ---
-2025-07-31 17:02:19,740 - INFO - Se obtuvieron 2 registros de la consulta.
-2025-07-31 17:02:19,741 - INFO - -> Se encontraron 2 registros. Mostrando detalle:
-2025-07-31 17:02:19,741 - INFO -     {'Tienda': 'Perfumes CCS La Bandera Ventas', 'Caja': None, 'Numero_de_Facturas': 0, 'Importe_Facturas': 0.0, 'Numero_de_Compras': 6, 'Importe_Compras': 15441.920000000006, 'Transacciones_Totales': 0, 'Transacciones_Pendientes': 0}
-2025-07-31 17:02:19,741 - INFO -     {'Tienda': 'Perfumes CCS La Bandera Ventas', 'Caja': 'TS1', 'Numero_de_Facturas': 1, 'Importe_Facturas': 100.0, 'Numero_de_Compras': 0, 'Importe_Compras': 0.0, 'Transacciones_Totales': 2, 'Transacciones_Pendientes': 1}
-2025-07-31 17:02:19,742 - INFO - --- Fin del detalle de datos ---
-2025-07-31 17:02:19,742 - INFO - --- Ciclo de sincronización finalizado ---
+2025-08-04 13:41:31,659 - WARNING - No se encontró 'C:\Users\RedesIP\Proyectos\APIs\front-script-api\dist\config.ini'. Iniciando GUI de configuración.
+2025-08-04 13:42:43,577 - INFO - Configuración no encontrada. El programa se cerrará.
+2025-08-04 13:43:16,014 - INFO - Archivo de configuración 'C:\Users\RedesIP\Proyectos\APIs\front-script-api\dist\config.ini' encontrado. Iniciando servicio.
+2025-08-04 13:43:16,075 - INFO - Servicio de sincronización iniciado. Primera ejecución inmediata.
+2025-08-04 13:43:16,077 - INFO - --- Iniciando ciclo de sincronización ---
+2025-08-04 13:43:16,393 - INFO - Se obtuvieron 0 registros de la consulta.
+2025-08-04 13:43:16,395 - INFO - -> La consulta se ejecutó, pero no se encontraron registros para la fecha actual.
+2025-08-04 13:43:16,396 - INFO - --- Ciclo de sincronización finalizado ---
+2025-08-04 13:58:16,932 - INFO - --- Iniciando ciclo de sincronización ---
+2025-08-04 13:58:16,958 - INFO - Se obtuvieron 0 registros de la consulta.
+2025-08-04 13:58:16,960 - INFO - -> La consulta se ejecutó, pero no se encontraron registros para la fecha actual.
+2025-08-04 13:58:16,960 - INFO - --- Ciclo de sincronización finalizado ---
+2025-08-04 14:01:38,368 - INFO - Sincronización manual solicitada.
+2025-08-04 14:01:38,371 - INFO - --- Iniciando ciclo de sincronización ---
+2025-08-04 14:01:38,398 - INFO - Se obtuvieron 5 registros de la consulta.
+2025-08-04 14:01:38,400 - INFO - Contexto: Marca=BBW, País=PAN, Tipo=Retail
+2025-08-04 14:01:38,400 - INFO - -> Se encontraron 5 registros. Mostrando detalle:
+2025-08-04 14:01:38,400 - INFO -     {'Tienda': 'Tda G1', 'Caja': None, 'Numero_de_Facturas': 0, 'Importe_Facturas': 0.0, 'Numero_de_Compras': 1, 'Importe_Compras': 1500.0, 'Transacciones_Totales': 0, 'Transacciones_Pendientes': 0}
+2025-08-04 14:01:38,400 - INFO -     {'Tienda': 'Tda G1', 'Caja': 'C1', 'Numero_de_Facturas': 2, 'Importe_Facturas': 325.0, 'Numero_de_Compras': 0, 'Importe_Compras': 0.0, 'Transacciones_Totales': 3, 'Transacciones_Pendientes': 1}
+2025-08-04 14:01:38,401 - INFO -     {'Tienda': 'Tda G1', 'Caja': 'C2', 'Numero_de_Facturas': 1, 'Importe_Facturas': 1000.0, 'Numero_de_Compras': 0, 'Importe_Compras': 0.0, 'Transacciones_Totales': 2, 'Transacciones_Pendientes': 0}
+2025-08-04 14:01:38,401 - INFO -     {'Tienda': 'Tda G2', 'Caja': None, 'Numero_de_Facturas': 0, 'Importe_Facturas': 0.0, 'Numero_de_Compras': 1, 'Importe_Compras': 800.0, 'Transacciones_Totales': 0, 'Transacciones_Pendientes': 0}
+2025-08-04 14:01:38,401 - INFO -     {'Tienda': 'Tda G2', 'Caja': 'C3', 'Numero_de_Facturas': 1, 'Importe_Facturas': 400.0, 'Numero_de_Compras': 0, 'Importe_Compras': 0.0, 'Transacciones_Totales': 1, 'Transacciones_Pendientes': 1}
+2025-08-04 14:01:38,401 - INFO - --- Fin del detalle de datos ---
+2025-08-04 14:01:38,401 - INFO - --- Ciclo de sincronización finalizado ---
+2025-08-04 14:05:38,794 - INFO - Solicitud de salida recibida.
+2025-08-04 14:05:38,794 - INFO - Aplicación cerrada.

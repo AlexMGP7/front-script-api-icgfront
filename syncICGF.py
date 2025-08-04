@@ -14,15 +14,12 @@ from pystray import MenuItem as item, Icon as icon, Menu
 from PIL import Image, ImageDraw
 
 # --- ESTADO GLOBAL DE LA APLICACIÓN ---
-# Usamos un diccionario para mantener el estado que será accedido por diferentes hilos.
 app_state = {
     "last_sync": "Nunca",
     "stop_event": threading.Event()
 }
 
 # --- CONFIGURACIÓN GLOBAL ---
-
-# Determina el directorio base, ya sea en modo script o .exe compilado
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
 else:
@@ -32,7 +29,7 @@ CONFIG_FILE = os.path.join(BASE_DIR, 'config.ini')
 LOG_FILE = os.path.join(BASE_DIR, "icg_front_sync.log")
 ICON_FILE = os.path.join(BASE_DIR, 'icon.png')
 
-# --- CONFIGURACIÓN DE LOGGING (Sin cambios) ---
+# --- CONFIGURACIÓN DE LOGGING ---
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 log_handler = RotatingFileHandler(LOG_FILE, mode='a', maxBytes=1*1024*1024,
                                   backupCount=5, encoding='utf-8', delay=0)
@@ -42,11 +39,11 @@ logger.setLevel(logging.INFO)
 logger.addHandler(log_handler)
 
 
-# --- INTERFAZ GRÁFICA DE CONFIGURACIÓN (Sin cambios) ---
+# --- INTERFAZ GRÁFICA DE CONFIGURACIÓN (MODIFICADA) ---
 def launch_config_gui():
-    """Crea y muestra una ventana para guardar las credenciales."""
+    """Crea y muestra una ventana para guardar las credenciales y la info de la tienda."""
     root = tk.Tk()
-    root.title("Configuración de Conexión a BD")
+    root.title("Configuración de Conexión y Tienda")
     root.withdraw()
     root.update_idletasks()
     x = (root.winfo_screenwidth() - root.winfo_reqwidth()) / 2
@@ -54,13 +51,19 @@ def launch_config_gui():
     root.geometry(f"+{int(x)}+{int(y)}")
     root.deiconify()
 
-    def save_credentials():
+    def save_settings():
+        # Datos de la base de datos
         server = entry_server.get()
         database = entry_database.get()
         user = entry_user.get()
         password = entry_password.get()
+        
+        # Nuevos datos de la tienda
+        marca = entry_marca.get()
+        pais = entry_pais.get()
+        tipo_tienda = entry_tipo.get()
 
-        if not all([server, database, user, password]):
+        if not all([server, database, user, password, marca, pais, tipo_tienda]):
             messagebox.showerror("Error", "Todos los campos son obligatorios.")
             return
 
@@ -71,11 +74,17 @@ def launch_config_gui():
             'UID': user,
             'PWD_b64': base64.b64encode(password.encode('utf-8')).decode('utf-8')
         }
+        # Nueva sección para la información de la tienda
+        config['StoreInfo'] = {
+            'Marca': marca,
+            'Pais': pais,
+            'TipoTienda': tipo_tienda
+        }
 
         try:
             with open(CONFIG_FILE, 'w', encoding='utf-8') as configfile:
                 config.write(configfile)
-            messagebox.showinfo("Éxito", "Credenciales guardadas. Reinicie la aplicación para comenzar la sincronización.")
+            messagebox.showinfo("Éxito", "Configuración guardada. Reinicie la aplicación para comenzar la sincronización.")
             root.destroy()
         except Exception as e:
             messagebox.showerror("Error al guardar", f"No se pudo escribir el archivo de configuración:\n{e}")
@@ -83,6 +92,7 @@ def launch_config_gui():
     frame = tk.Frame(root, padx=15, pady=15)
     frame.pack(padx=10, pady=10)
 
+    # --- Campos de BD ---
     tk.Label(frame, text="Servidor (IP o Nombre):").grid(row=0, column=0, sticky="w", pady=2)
     entry_server = tk.Entry(frame, width=40)
     entry_server.grid(row=0, column=1, pady=2)
@@ -98,14 +108,30 @@ def launch_config_gui():
     tk.Label(frame, text="Contraseña:").grid(row=3, column=0, sticky="w", pady=2)
     entry_password = tk.Entry(frame, width=40, show="*")
     entry_password.grid(row=3, column=1, pady=2)
+    
+    # Separador visual
+    tk.Frame(frame, height=2, bg="grey").grid(row=4, columnspan=2, pady=10, sticky="ew")
 
-    save_button = tk.Button(frame, text="Guardar", command=save_credentials, width=25)
-    save_button.grid(row=4, columnspan=2, pady=20)
+    # --- NUEVOS CAMPOS DE TIENDA ---
+    tk.Label(frame, text="Marca (BBW/VS/LCW):").grid(row=5, column=0, sticky="w", pady=2)
+    entry_marca = tk.Entry(frame, width=40)
+    entry_marca.grid(row=5, column=1, pady=2)
+    
+    tk.Label(frame, text="País (PAN/COL/etc.):").grid(row=6, column=0, sticky="w", pady=2)
+    entry_pais = tk.Entry(frame, width=40)
+    entry_pais.grid(row=6, column=1, pady=2)
+
+    tk.Label(frame, text="Tipo Tienda (Retail/Ecommerce):").grid(row=7, column=0, sticky="w", pady=2)
+    entry_tipo = tk.Entry(frame, width=40)
+    entry_tipo.grid(row=7, column=1, pady=2)
+
+    save_button = tk.Button(frame, text="Guardar Configuración", command=save_settings, width=30)
+    save_button.grid(row=8, columnspan=2, pady=20)
 
     root.mainloop()
 
+# --- LÓGICA DE SINCRONIZACIÓN ---
 
-# --- LÓGICA DE SINCRONIZACIÓN (Modificada para actualizar estado) ---
 def get_connection_string():
     """Lee el archivo config.ini y construye la cadena de conexión."""
     config = configparser.ConfigParser()
@@ -116,7 +142,23 @@ def get_connection_string():
         pwd_decoded = base64.b64decode(db_config['PWD_b64']).decode('utf-8')
         return f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server};DATABASE={database};UID={uid};PWD={pwd_decoded}"
     except Exception as e:
-        logger.error(f"Error al leer la configuración: {e}")
+        logger.error(f"Error al leer la configuración de BD: {e}")
+        return None
+
+# --- NUEVA FUNCIÓN ---
+def get_store_info():
+    """Lee la información de la tienda desde el config.ini."""
+    config = configparser.ConfigParser()
+    config.read(CONFIG_FILE)
+    try:
+        store_config = config['StoreInfo']
+        return {
+            'marca': store_config['Marca'],
+            'pais': store_config['Pais'],
+            'tipo_tienda': store_config['TipoTienda']
+        }
+    except KeyError as e:
+        logger.error(f"Error al leer la configuración de la tienda: falta la clave {e} en config.ini")
         return None
 
 def get_data_from_front(connection_string):
@@ -153,28 +195,32 @@ def get_data_from_front(connection_string):
             columnas = [column[0] for column in cursor.description]
             datos_nuevos = [dict(zip(columnas, fila)) for fila in cursor.fetchall()]
         logger.info(f"Se obtuvieron {len(datos_nuevos)} registros de la consulta.")
-        # Actualizamos el estado con la hora de la sincronización exitosa
         app_state["last_sync"] = time.strftime('%d-%m-%Y %H:%M:%S')
         return datos_nuevos
     except Exception as e:
         logger.error(f"Error al conectar o consultar la BD: {e}")
         return None
 
+# --- LÓGICA DE JOB (MODIFICADA) ---
 def job(connection_string):
     """Tarea de trabajo que se ejecuta en cada ciclo."""
     logger.info("--- Iniciando ciclo de sincronización ---")
     
-    # Esta función ya actualiza app_state["last_sync"] si tiene éxito
+    store_info = get_store_info()
     datos_rescatados = get_data_from_front(connection_string)
 
-    # Si la sincronización tuvo éxito (no devolvió None), actualizamos la UI
     if datos_rescatados is not None:
-        # Buscamos el ícono en el estado de la app y actualizamos su menú
         if 'tray_icon' in app_state and app_state['tray_icon']:
             app_state['tray_icon'].update_menu()
 
-    # --- El resto de tu lógica de logging permanece igual ---
     if datos_rescatados:
+        # LOG DE LA INFORMACIÓN DE LA TIENDA
+        if store_info:
+            logger.info(f"Contexto: Marca={store_info['marca']}, País={store_info['pais']}, Tipo={store_info['tipo_tienda']}")
+        else:
+            logger.warning("No se pudo cargar la información de la tienda desde config.ini.")
+        
+        # LOG DE LOS DATOS DE LA CONSULTA
         logger.info(f"-> Se encontraron {len(datos_rescatados)} registros. Mostrando detalle:")
         for registro in datos_rescatados:
             logger.info(f"    {registro}")
@@ -186,18 +232,16 @@ def job(connection_string):
 
     logger.info("--- Ciclo de sincronización finalizado ---")
 
-# --- LÓGICA DE LA BANDEJA DEL SISTEMA ---
+# --- LÓGICA DE LA BANDEJA DEL SISTEMA (Sin cambios) ---
 def create_image():
     """Crea una imagen genérica si icon.png no existe."""
     if os.path.exists(ICON_FILE):
         return Image.open(ICON_FILE)
     else:
-        # Crea una imagen en blanco 64x64
         width = 64
         height = 64
         image = Image.new('RGB', (width, height), color = 'darkgrey')
         dc = ImageDraw.Draw(image)
-        # Dibuja una 'S' de 'Sync' en el centro
         dc.text((20, 15), "S", fill="white", font_size=32)
         return image
 
@@ -207,7 +251,6 @@ def run_scheduler_thread(connection_string):
     
     schedule.every(15).minutes.do(job_with_conn)
     
-    # Ejecuta una vez al inicio de forma explícita
     logger.info("Servicio de sincronización iniciado. Primera ejecución inmediata.")
     job_with_conn()
     
@@ -233,12 +276,11 @@ def get_menu(connection_string):
 def exit_app(tray_icon):
     """Detiene los hilos y cierra la aplicación."""
     logger.info("Solicitud de salida recibida.")
-    app_state["stop_event"].set() # Señal para detener el hilo del scheduler
-    tray_icon.stop() # Detiene el icono de la bandeja
+    app_state["stop_event"].set()
+    tray_icon.stop()
     logger.info("Aplicación cerrada.")
 
-# --- PUNTO DE ENTRADA PRINCIPAL ---
-# --- PUNTO DE ENTRADA PRINCIPAL ---
+# --- PUNTO DE ENTRADA PRINCIPAL (Sin cambios) ---
 if __name__ == "__main__":
     if not os.path.exists(CONFIG_FILE):
         logger.warning(f"No se encontró '{CONFIG_FILE}'. Iniciando GUI de configuración.")
@@ -250,10 +292,8 @@ if __name__ == "__main__":
     conn_str = get_connection_string()
     
     if conn_str:
-        # AÑADIMOS EL ÍCONO AL ESTADO INICIAL
         app_state['tray_icon'] = None 
 
-        # 1. Creamos el objeto del ícono primero
         image = create_image()
         tray_icon = icon(
             'SyncICGFront',
@@ -263,15 +303,11 @@ if __name__ == "__main__":
         )
         tray_icon.exit_app = lambda: exit_app(tray_icon)
 
-        # 2. Guardamos la referencia al ícono en el estado global
         app_state['tray_icon'] = tray_icon
 
-        # 3. AHORA SÍ, iniciamos el hilo del planificador en segundo plano
-        #    Será un hilo "demonio" para que se cierre si el hilo principal termina.
         scheduler_thread = threading.Thread(target=run_scheduler_thread, args=(conn_str,), daemon=True)
         scheduler_thread.start()
         
-        # 4. Finalmente, ejecutamos el ícono (esto bloquea el hilo principal)
         tray_icon.run()
 
     else:
