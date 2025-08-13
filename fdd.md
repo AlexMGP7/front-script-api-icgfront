@@ -11,3 +11,5 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+pyinstaller --onefile --windowed --name SyncICGFront --add-data "icon.png;." --hidden-import win32timezone syncICGF.py 

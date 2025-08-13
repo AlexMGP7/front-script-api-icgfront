@@ -1,17 +1,36 @@
+# -*- coding: utf-8 -*-
+"""
+ICG Front Sync - Configuración cifrada con DPAPI (Windows)
+- Almacena TODO el INI cifrado en config.enc (base64 de blob DPAPI)
+- Migra automáticamente desde config.ini (antiguo con PWD_b64) si existe
+- La GUI solo lee/escribe a través de la app
+"""
+
+import os
+import sys
+import io
+import time
+import base64
+import threading
 import tkinter as tk
 from tkinter import messagebox
 import configparser
-import base64
-import os
-import sys
-import pyodbc
-import schedule
-import time
 import logging
 from logging.handlers import RotatingFileHandler
-import threading
+
+import pyodbc
+import schedule
 from pystray import MenuItem as item, Icon as icon, Menu
 from PIL import Image, ImageDraw, ImageFont
+
+# --- DPAPI (Windows) ---
+if sys.platform == 'win32':
+    try:
+        import win32crypt  # pywin32
+    except Exception:
+        win32crypt = None
+else:
+    win32crypt = None
 
 # --- ESTADO GLOBAL DE LA APLICACIÓN ---
 app_state = {
@@ -20,17 +39,18 @@ app_state = {
     "tray_icon": None,
 }
 
-# --- CONFIGURACIÓN GLOBAL ---
+# --- CONFIGURACIÓN DE RUTAS ---
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-CONFIG_FILE = os.path.join(BASE_DIR, 'config.ini')
+CONFIG_FILE_LEGACY = os.path.join(BASE_DIR, 'config.ini')      # antiguo (sin cifrar)
+CONFIG_FILE_ENC = os.path.join(BASE_DIR, 'config.enc')         # nuevo (cifrado)
 LOG_FILE = os.path.join(BASE_DIR, "icg_front_sync.log")
 ICON_FILE = os.path.join(BASE_DIR, 'icon.png')
 
-# --- CONFIGURACIÓN DE LOGGING ---
+# --- LOGGING ---
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 log_handler = RotatingFileHandler(LOG_FILE, mode='a', maxBytes=1*1024*1024,
                                   backupCount=5, encoding='utf-8', delay=0)
@@ -40,10 +60,96 @@ logger = logging.getLogger('icg_front_sync')
 if not logger.handlers:
     logger.setLevel(logging.INFO)
     logger.addHandler(log_handler)
+    
+if getattr(sys, 'frozen', False):
+    # Soporta --onefile con sys._MEIPASS
+    BASE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# --- UTILIDADES DPAPI ---
+def _ensure_dpapi():
+    if sys.platform != 'win32' or win32crypt is None:
+        raise RuntimeError("La protección DPAPI requiere Windows y el paquete 'pywin32'.")
+
+def _dpapi_encrypt(plaintext: bytes, scope="user") -> str:
+    """
+    Cifra bytes con DPAPI. scope: 'user' (por defecto) o 'machine'.
+    Devuelve base64 del blob cifrado para almacenarlo como texto.
+    """
+    _ensure_dpapi()
+    entropy = b'ICGFrontSync v1'  # 'sal' adicional constante para la app
+    flags = 0 if scope == 'user' else 0x4  # CRYPTPROTECT_LOCAL_MACHINE = 0x4
+    encrypted_blob = win32crypt.CryptProtectData(plaintext, None, entropy, None, None, flags)
+    return base64.b64encode(encrypted_blob).decode('utf-8')
+
+def _dpapi_decrypt(b64cipher: str) -> bytes:
+    """
+    Descifra el base64 generado por _dpapi_encrypt y devuelve bytes en claro.
+    """
+    _ensure_dpapi()
+    entropy = b'ICGFrontSync v1'
+    encrypted_blob = base64.b64decode(b64cipher)
+    # CryptUnprotectData -> (description, data)
+    return win32crypt.CryptUnprotectData(encrypted_blob, entropy, None, None, 0)[1]
+
+def _read_config_decrypted() -> configparser.ConfigParser:
+    """
+    Lee config.enc, descifra y devuelve un ConfigParser cargado.
+    Lanza excepción si falla.
+    """
+    with open(CONFIG_FILE_ENC, 'r', encoding='utf-8') as f:
+        b64 = f.read()
+    plaintext = _dpapi_decrypt(b64)
+    cfg = configparser.ConfigParser()
+    cfg.read_string(plaintext.decode('utf-8'))
+    return cfg
+
+def _write_config_encrypted(cfg: configparser.ConfigParser, scope="user"):
+    """
+    Cifra todo el INI y lo guarda en config.enc (texto base64).
+    """
+    buf = io.StringIO()
+    cfg.write(buf)
+    cipher = _dpapi_encrypt(buf.getvalue().encode('utf-8'), scope=scope)
+    with open(CONFIG_FILE_ENC, 'w', encoding='utf-8') as f:
+        f.write(cipher)
+
+def migrate_legacy_ini_if_needed():
+    """
+    Si hay config.ini con PWD_b64 y no hay config.enc, migrar y eliminar el .ini.
+    """
+    try:
+        if os.path.exists(CONFIG_FILE_ENC):
+            return
+        if not os.path.exists(CONFIG_FILE_LEGACY):
+            return
+
+        legacy = configparser.ConfigParser()
+        legacy.read(CONFIG_FILE_LEGACY, encoding='utf-8')
+
+        # Normaliza el campo de password
+        if 'Database' in legacy:
+            if 'PWD_b64' in legacy['Database']:
+                try:
+                    pwd = base64.b64decode(legacy['Database']['PWD_b64']).decode('utf-8')
+                except Exception:
+                    pwd = legacy['Database']['PWD_b64']  # por si estaba en claro
+                legacy['Database']['PWD'] = pwd
+                legacy['Database'].pop('PWD_b64', None)
+
+        _write_config_encrypted(legacy, scope="user")
+        try:
+            os.remove(CONFIG_FILE_LEGACY)
+        except Exception:
+            pass
+        logger.info("Migración de config.ini -> config.enc completada.")
+    except Exception as e:
+        logger.error(f"Fallo migrando config.ini: {e}")
 
 # --- INTERFAZ GRÁFICA DE CONFIGURACIÓN ---
 def launch_config_gui():
-    """Crea y muestra una ventana para guardar las credenciales y la info de la tienda."""
+    """Crea y muestra una ventana para guardar las credenciales y la info de la tienda (en cifrado)."""
     root = tk.Tk()
     root.title("Configuración de Conexión y Tienda")
     root.withdraw()
@@ -52,42 +158,6 @@ def launch_config_gui():
     y = (root.winfo_screenheight() - root.winfo_reqheight()) / 2
     root.geometry(f"+{int(x)}+{int(y)}")
     root.deiconify()
-
-    def save_settings():
-        # Datos de la base de datos
-        server = entry_server.get().strip()
-        database = entry_database.get().strip()
-        user = entry_user.get().strip()
-        password = entry_password.get().strip()
-        # Nuevos datos de la tienda
-        marca = entry_marca.get().strip()
-        pais = entry_pais.get().strip()
-        tipo_tienda = entry_tipo.get().strip()
-
-        if not all([server, database, user, password, marca, pais, tipo_tienda]):
-            messagebox.showerror("Error", "Todos los campos son obligatorios.")
-            return
-
-        config = configparser.ConfigParser()
-        config['Database'] = {
-            'Server': server,
-            'Database': database,
-            'UID': user,
-            'PWD_b64': base64.b64encode(password.encode('utf-8')).decode('utf-8')
-        }
-        config['StoreInfo'] = {
-            'Marca': marca,
-            'Pais': pais,
-            'TipoTienda': tipo_tienda
-        }
-
-        try:
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as configfile:
-                config.write(configfile)
-            messagebox.showinfo("Éxito", "Configuración guardada. Reinicie la aplicación para comenzar la sincronización.")
-            root.destroy()
-        except Exception as e:
-            messagebox.showerror("Error al guardar", f"No se pudo escribir el archivo de configuración:\n{e}")
 
     frame = tk.Frame(root, padx=15, pady=15)
     frame.pack(padx=10, pady=10)
@@ -118,6 +188,57 @@ def launch_config_gui():
     tk.Label(frame, text="Tipo Tienda (Retail/Ecommerce):").grid(row=7, column=0, sticky="w", pady=2)
     entry_tipo = tk.Entry(frame, width=40); entry_tipo.grid(row=7, column=1, pady=2)
 
+    # Precarga si existe config.enc
+    try:
+        if os.path.exists(CONFIG_FILE_ENC):
+            cfg_pre = _read_config_decrypted()
+            if 'Database' in cfg_pre:
+                entry_server.insert(0, cfg_pre['Database'].get('Server', ''))
+                entry_database.insert(0, cfg_pre['Database'].get('Database', ''))
+                entry_user.insert(0, cfg_pre['Database'].get('UID', ''))
+                # Por seguridad no precargamos la contraseña visible
+            if 'StoreInfo' in cfg_pre:
+                entry_marca.insert(0, cfg_pre['StoreInfo'].get('Marca', ''))
+                entry_pais.insert(0, cfg_pre['StoreInfo'].get('Pais', ''))
+                entry_tipo.insert(0, cfg_pre['StoreInfo'].get('TipoTienda', ''))
+    except Exception as e:
+        logger.warning(f"No se pudo precargar configuración: {e}")
+
+    def save_settings():
+        # Datos de la base de datos
+        server = entry_server.get().strip()
+        database = entry_database.get().strip()
+        user = entry_user.get().strip()
+        password = entry_password.get().strip()
+        # Datos de la tienda
+        marca = entry_marca.get().strip()
+        pais = entry_pais.get().strip()
+        tipo_tienda = entry_tipo.get().strip()
+
+        if not all([server, database, user, password, marca, pais, tipo_tienda]):
+            messagebox.showerror("Error", "Todos los campos son obligatorios.")
+            return
+
+        config = configparser.ConfigParser()
+        config['Database'] = {
+            'Server': server,
+            'Database': database,
+            'UID': user,
+            'PWD': password  # en claro dentro del INI en memoria; se cifra al guardar a disco
+        }
+        config['StoreInfo'] = {
+            'Marca': marca,
+            'Pais': pais,
+            'TipoTienda': tipo_tienda
+        }
+
+        try:
+            _write_config_encrypted(config, scope="user")  # usar "machine" si debe compartir entre usuarios del equipo
+            messagebox.showinfo("Éxito", "Configuración guardada. Reinicie la aplicación para comenzar la sincronización.")
+            root.destroy()
+        except Exception as e:
+            messagebox.showerror("Error al guardar", f"No se pudo escribir el archivo de configuración cifrado:\n{e}")
+
     save_button = tk.Button(frame, text="Guardar Configuración", command=save_settings, width=30)
     save_button.grid(row=8, columnspan=2, pady=20)
 
@@ -125,42 +246,35 @@ def launch_config_gui():
 
 # --- LÓGICA DE SINCRONIZACIÓN ---
 def get_connection_string():
-    """Lee el archivo config.ini y construye la cadena de conexión."""
-    config = configparser.ConfigParser()
-    config.read(CONFIG_FILE, encoding='utf-8')
+    """Descifra config.enc y construye la cadena de conexión."""
     try:
-        db_config = config['Database']
-        server, database, uid = db_config['Server'], db_config['Database'], db_config['UID']
-        pwd_decoded = base64.b64decode(db_config['PWD_b64']).decode('utf-8')
+        cfg = _read_config_decrypted()
+        db = cfg['Database']
+        server, database, uid, pwd = db['Server'], db['Database'], db['UID'], db['PWD']
 
         # Detectar driver 18 o 17 (el que esté disponible)
         available = pyodbc.drivers()
-        driver = None
-        for cand in ("ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server"):
-            if cand in available:
-                driver = cand
-                break
+        driver = next((d for d in ("ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server") if d in available), None)
         if driver is None:
             driver = "ODBC Driver 17 for SQL Server"  # fallback
 
-        return f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};UID={uid};PWD={pwd_decoded}"
+        return f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};UID={uid};PWD={pwd}"
     except Exception as e:
-        logger.error(f"Error al leer la configuración de BD: {e}")
+        logger.error(f"Error al leer/descifrar la configuración de BD: {e}")
         return None
 
 def get_store_info():
-    """Lee la información de la tienda desde el config.ini."""
-    config = configparser.ConfigParser()
-    config.read(CONFIG_FILE, encoding='utf-8')
+    """Descifra y lee la información de la tienda desde config.enc."""
     try:
-        store_config = config['StoreInfo']
+        cfg = _read_config_decrypted()
+        store = cfg['StoreInfo']
         return {
-            'marca': store_config['Marca'],
-            'pais': store_config['Pais'],
-            'tipo_tienda': store_config['TipoTienda']
+            'marca': store['Marca'],
+            'pais': store['Pais'],
+            'tipo_tienda': store['TipoTienda']
         }
-    except KeyError as e:
-        logger.error(f"Error al leer la configuración de la tienda: falta la clave {e} en config.ini")
+    except Exception as e:
+        logger.error(f"Error al leer la configuración de la tienda: {e}")
         return None
 
 def get_data_from_front(connection_string):
@@ -249,13 +363,11 @@ def job(connection_string):
     store_info = get_store_info()
     datos_rescatados = get_data_from_front(connection_string)
 
-    # No forzamos update_menu() desde un hilo para evitar problemas de UI
-
     if datos_rescatados:
         if store_info:
             logger.info(f"Contexto: Marca={store_info['marca']}, País={store_info['pais']}, Tipo={store_info['tipo_tienda']}")
         else:
-            logger.warning("No se pudo cargar la información de la tienda desde config.ini.")
+            logger.warning("No se pudo cargar la información de la tienda desde config.enc.")
 
         logger.info(f"-> Se encontraron {len(datos_rescatados)} registros. Mostrando detalle:")
         for registro in datos_rescatados:
@@ -312,7 +424,6 @@ def run_scheduler_thread(connection_string):
 
 def get_menu(connection_string):
     """Genera el menú dinámico para el icono de la bandeja."""
-
     def force_sync(icon_obj, menu_item):
         logger.info("Sincronización manual solicitada.")
         threading.Thread(target=job, args=(connection_string,), daemon=True).start()
@@ -342,13 +453,23 @@ def exit_app(icon_obj, _menu_item):
 
 # --- PUNTO DE ENTRADA PRINCIPAL ---
 if __name__ == "__main__":
-    if not os.path.exists(CONFIG_FILE):
-        logger.warning(f"No se encontró '{CONFIG_FILE}'. Iniciando GUI de configuración.")
-        launch_config_gui()
-        logger.info("Configuración no encontrada. El programa se cerrará.")
-        sys.exit("Configuración guardada. Por favor, reinicie la aplicación.")
+    # Migrar desde .ini si aplica
+    migrate_legacy_ini_if_needed()
 
-    logger.info(f"Archivo de configuración '{CONFIG_FILE}' encontrado. Iniciando servicio.")
+    if not os.path.exists(CONFIG_FILE_ENC):
+        logger.warning(f"No se encontró '{CONFIG_FILE_ENC}'. Iniciando GUI de configuración.")
+        try:
+            launch_config_gui()
+            logger.info("Configuración no encontrada. El programa se cerrará.")
+            sys.exit("Configuración guardada. Por favor, reinicie la aplicación.")
+        except Exception as e:
+            logger.error(f"No se pudo abrir la GUI de configuración: {e}")
+            # Mensaje claro si falta DPAPI/pywin32
+            if sys.platform != 'win32' or win32crypt is None:
+                sys.exit("Esta aplicación requiere Windows y el paquete 'pywin32' para cifrado DPAPI.")
+            sys.exit(1)
+
+    logger.info(f"Archivo de configuración cifrado '{CONFIG_FILE_ENC}' encontrado. Iniciando servicio.")
     conn_str = get_connection_string()
 
     if conn_str:
@@ -365,20 +486,21 @@ if __name__ == "__main__":
         scheduler_thread.start()
 
         # Bloquea hasta que se cierre el icono
-        tray_icon.run()
-
-        # Cierre limpio
-        app_state["stop_event"].set()
-        schedule.clear()
         try:
-            scheduler_thread.join(timeout=5)
-        except Exception:
-            pass
+            tray_icon.run()
+        finally:
+            # Cierre limpio
+            app_state["stop_event"].set()
+            schedule.clear()
+            try:
+                scheduler_thread.join(timeout=5)
+            except Exception:
+                pass
 
     else:
-        logger.error("No se pudo iniciar. El archivo de configuración es inválido.")
+        logger.error("No se pudo iniciar. El archivo de configuración es inválido o no se pudo descifrar.")
         root = tk.Tk()
         root.withdraw()
-        messagebox.showerror("Error de Configuración", "No se pudo iniciar. 'config.ini' es inválido. Bórrelo para reconfigurar.")
+        messagebox.showerror("Error de Configuración", "No se pudo iniciar. 'config.enc' es inválido o no se pudo descifrar.\nBorre el archivo para reconfigurar.")
         root.destroy()
         sys.exit("Error en la configuración.")
