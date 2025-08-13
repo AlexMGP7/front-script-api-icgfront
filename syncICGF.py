@@ -20,6 +20,9 @@ import configparser
 import logging
 from logging.handlers import RotatingFileHandler
 
+import json
+
+
 # --- BBDD: SIN ODBC (pymssql) ---
 try:
     import pymssql  # pip install pymssql
@@ -64,7 +67,9 @@ app_state = {
     "last_sync": "Nunca",
     "stop_event": threading.Event(),
     "tray_icon": None,
+    "interval_minutes": 15,  # >>> NUEVO: intervalo por defecto
 }
+
 
 # --- LOGGING ---
 def _setup_logging():
@@ -103,6 +108,14 @@ def _dpapi_encrypt(plaintext: bytes, scope: str = "user") -> str:
     flags = 0 if scope == 'user' else 0x4  # CRYPTPROTECT_LOCAL_MACHINE = 0x4
     encrypted_blob = win32crypt.CryptProtectData(plaintext, None, entropy, None, None, flags)
     return base64.b64encode(encrypted_blob).decode('utf-8')
+
+# --- NUEVA FUNCIÓN: construir el payload JSON ---
+def _build_json_payload(rows, store_info):
+    pais = (store_info or {}).get('pais')
+    tipo = (store_info or {}).get('tipo_tienda')
+    enriched = [{**row, "Pais": pais, "Tipo_Tienda": tipo} for row in (rows or [])]
+    return {"Registros": enriched}
+
 
 def _dpapi_decrypt(b64cipher: str) -> bytes:
     """
@@ -168,6 +181,24 @@ def _verify_admin_key(candidate: str) -> bool:
     if not saved:
         return False
     return _hash_key(candidate) == saved
+
+def _get_config_interval(default: int = 15) -> int:
+    try:
+        cfg = _read_config_decrypted()
+        return int(cfg.get('Schedule', 'IntervalMinutes', fallback=default))
+    except Exception:
+        return default
+
+def _set_config_interval(minutes: int) -> None:
+    try:
+        cfg = _read_config_decrypted()
+        if 'Schedule' not in cfg:
+            cfg['Schedule'] = {}
+        cfg['Schedule']['IntervalMinutes'] = str(minutes)
+        _write_config_encrypted(cfg, scope="user")
+        logger.info(f"Intervalo guardado en config.enc: {minutes} minutos.")
+    except Exception as e:
+        logger.error(f"No se pudo guardar el intervalo en config.enc: {e}")
 
 def _bootstrap_admin_key_ui() -> bool:
     """
@@ -556,6 +587,12 @@ def job(server: str, database: str, uid: str, pwd: str):
         for registro in datos_rescatados:
             logger.info(f"    {registro}")
         logger.info("--- Fin del detalle de datos ---")
+
+        try:
+            payload = _build_json_payload(datos_rescatados, store_info)
+            logger.info(f"JSON para endpoint: {json.dumps(payload, ensure_ascii=False)}")
+        except Exception as e:
+            logger.exception(f"Error serializando payload JSON: {e}")
     elif datos_rescatados == []:
         logger.info("-> La consulta se ejecutó, pero no se encontraron registros para la fecha actual.")
     else:
@@ -595,12 +632,13 @@ def run_scheduler_thread(server: str, database: str, uid: str, pwd: str):
     """Hilo que ejecuta las tareas programadas sin busy-wait."""
     job_with_params = lambda: job(server, database, uid, pwd)
 
-    schedule.every(15).minutes.do(job_with_params)
+    # >>> NUEVO: programa usando el intervalo actual y una etiqueta
+    schedule.clear('sync_job')
+    schedule.every(app_state.get("interval_minutes", 15)).minutes.do(job_with_params).tag('sync_job')
 
-    logger.info("Servicio de sincronización iniciado. Primera ejecución inmediata.")
+    logger.info(f"Servicio de sincronización iniciado (intervalo {app_state['interval_minutes']} min). Primera ejecución inmediata.")
     job_with_params()
 
-    # Bucle eficiente: espera hasta 1s o hasta que se pida parar
     while not app_state["stop_event"].wait(1):
         schedule.run_pending()
     logger.info("Hilo de scheduler detenido.")
@@ -613,16 +651,44 @@ def get_menu(server: str, database: str, uid: str, pwd: str):
 
     def open_config(icon_obj, menu_item):
         logger.info("Apertura de configuración solicitada.")
-        # Pide/valida clave y solo entonces abre la GUI
         threading.Thread(target=lambda: _require_admin_key_then(launch_config_gui), daemon=True).start()
+
+    # >>> NUEVO: cambiar intervalo en caliente (con diálogo)
+    def change_interval(icon_obj, menu_item):
+        try:
+            root = tk.Tk(); root.withdraw()
+            val = simpledialog.askinteger(
+                "Intervalo de ejecución",
+                "Minutos entre sincronizaciones (1-1440):",
+                minvalue=1, maxvalue=1440, parent=root
+            )
+        finally:
+            try: root.destroy()
+            except Exception: pass
+
+        if val is None:
+            return  # cancelado
+
+        app_state["interval_minutes"] = int(val)
+        # Reprograma el job etiquetado
+        schedule.clear('sync_job')
+        job_with_params = lambda: job(server, database, uid, pwd)
+        schedule.every(app_state["interval_minutes"]).minutes.do(job_with_params).tag('sync_job')
+        _set_config_interval(app_state["interval_minutes"])
+        logger.info(f"Intervalo de sincronización actualizado a {app_state['interval_minutes']} min.")
 
     def _exit(icon_obj, menu_item):
         exit_app(icon_obj, menu_item)
 
+    # --- Items de menú ---
     yield item(lambda i: f'Última Sincronización: {app_state["last_sync"]}', None, enabled=False)
+    # >>> NUEVO: mostrar el intervalo actual
+    yield item(lambda i: f'Intervalo: {app_state["interval_minutes"]} min', None, enabled=False)
     yield Menu.SEPARATOR
     yield item('Sincronizar Ahora', force_sync)
     yield item('Configurar...', open_config)
+    # >>> NUEVO: opción para cambiar el intervalo
+    yield item('Cambiar intervalo…', change_interval)
     yield item('Salir', _exit)
 
 def exit_app(icon_obj, _menu_item):
@@ -679,6 +745,9 @@ if __name__ == "__main__":
 
     if params:
         server, database, uid, pwd = params
+
+        app_state["interval_minutes"] = _get_config_interval(default=15)
+
         image = create_image()
         tray_icon = icon(
             'SyncICGFront',
@@ -690,6 +759,7 @@ if __name__ == "__main__":
 
         scheduler_thread = threading.Thread(target=run_scheduler_thread, args=(server, database, uid, pwd), daemon=True)
         scheduler_thread.start()
+
 
         # Bloquea hasta que se cierre el icono
         try:
