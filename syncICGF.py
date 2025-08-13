@@ -11,12 +11,13 @@ import logging
 from logging.handlers import RotatingFileHandler
 import threading
 from pystray import MenuItem as item, Icon as icon, Menu
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 # --- ESTADO GLOBAL DE LA APLICACIÓN ---
 app_state = {
     "last_sync": "Nunca",
-    "stop_event": threading.Event()
+    "stop_event": threading.Event(),
+    "tray_icon": None,
 }
 
 # --- CONFIGURACIÓN GLOBAL ---
@@ -34,12 +35,13 @@ log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 log_handler = RotatingFileHandler(LOG_FILE, mode='a', maxBytes=1*1024*1024,
                                   backupCount=5, encoding='utf-8', delay=0)
 log_handler.setFormatter(log_formatter)
-logger = logging.getLogger('root')
-logger.setLevel(logging.INFO)
-logger.addHandler(log_handler)
 
+logger = logging.getLogger('icg_front_sync')
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    logger.addHandler(log_handler)
 
-# --- INTERFAZ GRÁFICA DE CONFIGURACIÓN (MODIFICADA) ---
+# --- INTERFAZ GRÁFICA DE CONFIGURACIÓN ---
 def launch_config_gui():
     """Crea y muestra una ventana para guardar las credenciales y la info de la tienda."""
     root = tk.Tk()
@@ -53,15 +55,14 @@ def launch_config_gui():
 
     def save_settings():
         # Datos de la base de datos
-        server = entry_server.get()
-        database = entry_database.get()
-        user = entry_user.get()
-        password = entry_password.get()
-        
+        server = entry_server.get().strip()
+        database = entry_database.get().strip()
+        user = entry_user.get().strip()
+        password = entry_password.get().strip()
         # Nuevos datos de la tienda
-        marca = entry_marca.get()
-        pais = entry_pais.get()
-        tipo_tienda = entry_tipo.get()
+        marca = entry_marca.get().strip()
+        pais = entry_pais.get().strip()
+        tipo_tienda = entry_tipo.get().strip()
 
         if not all([server, database, user, password, marca, pais, tipo_tienda]):
             messagebox.showerror("Error", "Todos los campos son obligatorios.")
@@ -74,7 +75,6 @@ def launch_config_gui():
             'UID': user,
             'PWD_b64': base64.b64encode(password.encode('utf-8')).decode('utf-8')
         }
-        # Nueva sección para la información de la tienda
         config['StoreInfo'] = {
             'Marca': marca,
             'Pais': pais,
@@ -94,36 +94,29 @@ def launch_config_gui():
 
     # --- Campos de BD ---
     tk.Label(frame, text="Servidor (IP o Nombre):").grid(row=0, column=0, sticky="w", pady=2)
-    entry_server = tk.Entry(frame, width=40)
-    entry_server.grid(row=0, column=1, pady=2)
+    entry_server = tk.Entry(frame, width=40); entry_server.grid(row=0, column=1, pady=2)
 
     tk.Label(frame, text="Nombre Base de Datos:").grid(row=1, column=0, sticky="w", pady=2)
-    entry_database = tk.Entry(frame, width=40)
-    entry_database.grid(row=1, column=1, pady=2)
+    entry_database = tk.Entry(frame, width=40); entry_database.grid(row=1, column=1, pady=2)
 
     tk.Label(frame, text="Usuario:").grid(row=2, column=0, sticky="w", pady=2)
-    entry_user = tk.Entry(frame, width=40)
-    entry_user.grid(row=2, column=1, pady=2)
+    entry_user = tk.Entry(frame, width=40); entry_user.grid(row=2, column=1, pady=2)
 
     tk.Label(frame, text="Contraseña:").grid(row=3, column=0, sticky="w", pady=2)
-    entry_password = tk.Entry(frame, width=40, show="*")
-    entry_password.grid(row=3, column=1, pady=2)
-    
+    entry_password = tk.Entry(frame, width=40, show="*"); entry_password.grid(row=3, column=1, pady=2)
+
     # Separador visual
     tk.Frame(frame, height=2, bg="grey").grid(row=4, columnspan=2, pady=10, sticky="ew")
 
     # --- NUEVOS CAMPOS DE TIENDA ---
     tk.Label(frame, text="Marca (BBW/VS/LCW):").grid(row=5, column=0, sticky="w", pady=2)
-    entry_marca = tk.Entry(frame, width=40)
-    entry_marca.grid(row=5, column=1, pady=2)
-    
+    entry_marca = tk.Entry(frame, width=40); entry_marca.grid(row=5, column=1, pady=2)
+
     tk.Label(frame, text="País (PAN/COL/etc.):").grid(row=6, column=0, sticky="w", pady=2)
-    entry_pais = tk.Entry(frame, width=40)
-    entry_pais.grid(row=6, column=1, pady=2)
+    entry_pais = tk.Entry(frame, width=40); entry_pais.grid(row=6, column=1, pady=2)
 
     tk.Label(frame, text="Tipo Tienda (Retail/Ecommerce):").grid(row=7, column=0, sticky="w", pady=2)
-    entry_tipo = tk.Entry(frame, width=40)
-    entry_tipo.grid(row=7, column=1, pady=2)
+    entry_tipo = tk.Entry(frame, width=40); entry_tipo.grid(row=7, column=1, pady=2)
 
     save_button = tk.Button(frame, text="Guardar Configuración", command=save_settings, width=30)
     save_button.grid(row=8, columnspan=2, pady=20)
@@ -131,25 +124,34 @@ def launch_config_gui():
     root.mainloop()
 
 # --- LÓGICA DE SINCRONIZACIÓN ---
-
 def get_connection_string():
     """Lee el archivo config.ini y construye la cadena de conexión."""
     config = configparser.ConfigParser()
-    config.read(CONFIG_FILE)
+    config.read(CONFIG_FILE, encoding='utf-8')
     try:
         db_config = config['Database']
         server, database, uid = db_config['Server'], db_config['Database'], db_config['UID']
         pwd_decoded = base64.b64decode(db_config['PWD_b64']).decode('utf-8')
-        return f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={server};DATABASE={database};UID={uid};PWD={pwd_decoded}"
+
+        # Detectar driver 18 o 17 (el que esté disponible)
+        available = pyodbc.drivers()
+        driver = None
+        for cand in ("ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server"):
+            if cand in available:
+                driver = cand
+                break
+        if driver is None:
+            driver = "ODBC Driver 17 for SQL Server"  # fallback
+
+        return f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};UID={uid};PWD={pwd_decoded}"
     except Exception as e:
         logger.error(f"Error al leer la configuración de BD: {e}")
         return None
 
-# --- NUEVA FUNCIÓN ---
 def get_store_info():
     """Lee la información de la tienda desde el config.ini."""
     config = configparser.ConfigParser()
-    config.read(CONFIG_FILE)
+    config.read(CONFIG_FILE, encoding='utf-8')
     try:
         store_config = config['StoreInfo']
         return {
@@ -162,65 +164,99 @@ def get_store_info():
         return None
 
 def get_data_from_front(connection_string):
-    """Se conecta a la BD, ejecuta la consulta y devuelve los resultados."""
+    """Se conecta a la BD, ejecuta la consulta y devuelve los resultados. Incluye reintentos."""
     if not connection_string:
         logger.error("No se pudo obtener la cadena de conexión. Abortando consulta.")
         return None
-    
+
     sql_query = """
     WITH VentasAgregadas AS (
-        SELECT ALM.NOMBREALMACEN AS Tienda, FV.CAJA, COUNT(DISTINCT FV.NUMSERIE + '-' + CAST(FV.NUMFACTURA AS VARCHAR)) AS NumeroFacturas, SUM(AL.TOTAL) AS ImporteFacturas
-        FROM FACTURASVENTA FV INNER JOIN ALBVENTACAB AC ON FV.NUMSERIE = AC.NUMSERIEFAC AND FV.NUMFACTURA = AC.NUMFAC AND FV.N = AC.NFAC INNER JOIN ALBVENTALIN AL ON AC.NUMSERIE = AL.NUMSERIE AND AC.NUMALBARAN = AL.NUMALBARAN AND AC.N = AL.N INNER JOIN ALMACEN ALM ON AL.CODALMACEN = ALM.CODALMACEN
-        WHERE CAST(FV.FECHA AS DATE) = CAST(GETDATE() AS DATE) GROUP BY ALM.NOMBREALMACEN, FV.CAJA
+        SELECT ALM.NOMBREALMACEN AS Tienda, FV.CAJA,
+               COUNT(DISTINCT FV.NUMSERIE + '-' + CAST(FV.NUMFACTURA AS VARCHAR)) AS NumeroFacturas,
+               SUM(AL.TOTAL) AS ImporteFacturas
+        FROM FACTURASVENTA FV
+        INNER JOIN ALBVENTACAB AC
+            ON FV.NUMSERIE = AC.NUMSERIEFAC AND FV.NUMFACTURA = AC.NUMFAC AND FV.N = AC.NFAC
+        INNER JOIN ALBVENTALIN AL
+            ON AC.NUMSERIE = AL.NUMSERIE AND AC.NUMALBARAN = AL.NUMALBARAN AND AC.N = AL.N
+        INNER JOIN ALMACEN ALM
+            ON AL.CODALMACEN = ALM.CODALMACEN
+        WHERE CAST(FV.FECHA AS DATE) = CAST(GETDATE() AS DATE)
+        GROUP BY ALM.NOMBREALMACEN, FV.CAJA
     ), ComprasAgregadas AS (
-        SELECT ALM.NOMBREALMACEN AS Tienda, COUNT(DISTINCT ACC.NUMSERIE + '-' + CAST(ACC.NUMALBARAN AS VARCHAR)) AS NumeroCompras, SUM(ACL.TOTAL) AS ImporteCompras
-        FROM ALBCOMPRACAB ACC INNER JOIN ALBCOMPRALIN ACL ON ACC.NUMSERIE = ACL.NUMSERIE AND ACC.NUMALBARAN = ACL.NUMALBARAN AND ACC.N = ACL.N INNER JOIN ALMACEN ALM ON ACL.CODALMACEN = ALM.CODALMACEN
-        WHERE CAST(ACC.FECHAALBARAN AS DATE) = CAST(GETDATE() AS DATE) GROUP BY ALM.NOMBREALMACEN
+        SELECT ALM.NOMBREALMACEN AS Tienda,
+               COUNT(DISTINCT ACC.NUMSERIE + '-' + CAST(ACC.NUMALBARAN AS VARCHAR)) AS NumeroCompras,
+               SUM(ACL.TOTAL) AS ImporteCompras
+        FROM ALBCOMPRACAB ACC
+        INNER JOIN ALBCOMPRALIN ACL
+            ON ACC.NUMSERIE = ACL.NUMSERIE AND ACC.NUMALBARAN = ACL.NUMALBARAN AND ACC.N = ACL.N
+        INNER JOIN ALMACEN ALM
+            ON ACL.CODALMACEN = ALM.CODALMACEN
+        WHERE CAST(ACC.FECHAALBARAN AS DATE) = CAST(GETDATE() AS DATE)
+        GROUP BY ALM.NOMBREALMACEN
     ), Pendientes AS (
-        SELECT RT.CAJA AS Caja, COUNT(RT.ID) AS TransaccionesPendientes FROM REM_TRANSACCIONES RT WHERE RT.IDCENTRAL = -1 GROUP BY RT.CAJA
+        SELECT RT.CAJA AS Caja, COUNT(RT.ID) AS TransaccionesPendientes
+        FROM REM_TRANSACCIONES RT
+        WHERE RT.IDCENTRAL = -1
+        GROUP BY RT.CAJA
     ), TransaccionesTotales AS (
-        SELECT RT.CAJA AS Caja, COUNT(RT.ID) AS TransaccionesGenerales FROM REM_TRANSACCIONES RT GROUP BY RT.CAJA
+        SELECT RT.CAJA AS Caja, COUNT(RT.ID) AS TransaccionesGenerales
+        FROM REM_TRANSACCIONES RT
+        GROUP BY RT.CAJA
     ), MovimientosConsolidados AS (
-        SELECT Tienda, Caja, NumeroFacturas, ImporteFacturas, 0 AS NumeroCompras, 0 AS ImporteCompras FROM VentasAgregadas
-        UNION ALL SELECT Tienda, NULL AS Caja, 0 AS NumeroFacturas, 0 AS ImporteFacturas, NumeroCompras, ImporteCompras FROM ComprasAgregadas
+        SELECT Tienda, Caja, NumeroFacturas, ImporteFacturas, 0 AS NumeroCompras, 0 AS ImporteCompras
+        FROM VentasAgregadas
+        UNION ALL
+        SELECT Tienda, NULL AS Caja, 0 AS NumeroFacturas, 0 AS ImporteFacturas, NumeroCompras, ImporteCompras
+        FROM ComprasAgregadas
     )
-    SELECT MC.Tienda, MC.Caja, SUM(MC.NumeroFacturas) AS Numero_de_Facturas, SUM(MC.ImporteFacturas) AS Importe_Facturas, SUM(MC.NumeroCompras) AS Numero_de_Compras, SUM(MC.ImporteCompras) AS Importe_Compras, MAX(ISNULL(TT.TransaccionesGenerales, 0)) AS Transacciones_Totales, MAX(ISNULL(P.TransaccionesPendientes, 0)) AS Transacciones_Pendientes
-    FROM MovimientosConsolidados MC LEFT JOIN Pendientes P ON MC.Caja = P.Caja LEFT JOIN TransaccionesTotales TT ON MC.Caja = TT.Caja
-    GROUP BY MC.Tienda, MC.Caja ORDER BY MC.Tienda, MC.Caja;
+    SELECT MC.Tienda, MC.Caja,
+           SUM(MC.NumeroFacturas) AS Numero_de_Facturas,
+           SUM(MC.ImporteFacturas) AS Importe_Facturas,
+           SUM(MC.NumeroCompras) AS Numero_de_Compras,
+           SUM(MC.ImporteCompras) AS Importe_Compras,
+           MAX(ISNULL(TT.TransaccionesGenerales, 0)) AS Transacciones_Totales,
+           MAX(ISNULL(P.TransaccionesPendientes, 0)) AS Transacciones_Pendientes
+    FROM MovimientosConsolidados MC
+    LEFT JOIN Pendientes P ON MC.Caja = P.Caja
+    LEFT JOIN TransaccionesTotales TT ON MC.Caja = TT.Caja
+    GROUP BY MC.Tienda, MC.Caja
+    ORDER BY MC.Tienda, MC.Caja;
     """
-    try:
-        with pyodbc.connect(connection_string, timeout=10) as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql_query)
-            columnas = [column[0] for column in cursor.description]
-            datos_nuevos = [dict(zip(columnas, fila)) for fila in cursor.fetchall()]
-        logger.info(f"Se obtuvieron {len(datos_nuevos)} registros de la consulta.")
-        app_state["last_sync"] = time.strftime('%d-%m-%Y %H:%M:%S')
-        return datos_nuevos
-    except Exception as e:
-        logger.error(f"Error al conectar o consultar la BD: {e}")
-        return None
 
-# --- LÓGICA DE JOB (MODIFICADA) ---
+    for attempt in range(1, 4):
+        try:
+            with pyodbc.connect(connection_string, timeout=10) as conn:
+                cursor = conn.cursor()
+                cursor.execute(sql_query)
+                columnas = [column[0] for column in cursor.description]
+                datos_nuevos = [dict(zip(columnas, fila)) for fila in cursor.fetchall()]
+            logger.info(f"Se obtuvieron {len(datos_nuevos)} registros (intento {attempt}).")
+            app_state["last_sync"] = time.strftime('%d-%m-%Y %H:%M:%S')
+            return datos_nuevos
+        except Exception as e:
+            logger.warning(f"Error al conectar o consultar la BD (intento {attempt}/3): {e}")
+            time.sleep(2 * attempt)
+
+    logger.error("Falló la consulta tras 3 intentos.")
+    return None
+
+# --- LÓGICA DE JOB ---
 def job(connection_string):
     """Tarea de trabajo que se ejecuta en cada ciclo."""
     logger.info("--- Iniciando ciclo de sincronización ---")
-    
+
     store_info = get_store_info()
     datos_rescatados = get_data_from_front(connection_string)
 
-    if datos_rescatados is not None:
-        if 'tray_icon' in app_state and app_state['tray_icon']:
-            app_state['tray_icon'].update_menu()
+    # No forzamos update_menu() desde un hilo para evitar problemas de UI
 
     if datos_rescatados:
-        # LOG DE LA INFORMACIÓN DE LA TIENDA
         if store_info:
             logger.info(f"Contexto: Marca={store_info['marca']}, País={store_info['pais']}, Tipo={store_info['tipo_tienda']}")
         else:
             logger.warning("No se pudo cargar la información de la tienda desde config.ini.")
-        
-        # LOG DE LOS DATOS DE LA CONSULTA
+
         logger.info(f"-> Se encontraron {len(datos_rescatados)} registros. Mostrando detalle:")
         for registro in datos_rescatados:
             logger.info(f"    {registro}")
@@ -232,28 +268,43 @@ def job(connection_string):
 
     logger.info("--- Ciclo de sincronización finalizado ---")
 
-# --- LÓGICA DE LA BANDEJA DEL SISTEMA (Sin cambios) ---
+# --- LÓGICA DE LA BANDEJA DEL SISTEMA ---
 def create_image():
     """Crea una imagen genérica si icon.png no existe."""
     if os.path.exists(ICON_FILE):
-        return Image.open(ICON_FILE)
-    else:
-        width = 64
-        height = 64
-        image = Image.new('RGB', (width, height), color = 'darkgrey')
-        dc = ImageDraw.Draw(image)
-        dc.text((20, 15), "S", fill="white", font_size=32)
-        return image
+        try:
+            return Image.open(ICON_FILE)
+        except Exception as e:
+            logger.warning(f"No se pudo abrir icon.png: {e}. Usando icono por defecto.")
+
+    # Icono simple por defecto
+    width = 64
+    height = 64
+    image = Image.new('RGB', (width, height), color='darkgrey')
+    draw = ImageDraw.Draw(image)
+    try:
+        font = ImageFont.truetype("arial.ttf", 28)
+    except Exception:
+        font = ImageFont.load_default()
+    # Centrar la "S"
+    try:
+        bbox = draw.textbbox((0, 0), "S", font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    except Exception:
+        # Compatibilidad con Pillow antiguo
+        tw, th = draw.textsize("S", font=font)
+    draw.text(((width - tw) // 2, (height - th) // 2), "S", fill="white", font=font)
+    return image
 
 def run_scheduler_thread(connection_string):
     """Hilo que ejecuta las tareas programadas."""
     job_with_conn = lambda: job(connection_string)
-    
+
     schedule.every(15).minutes.do(job_with_conn)
-    
+
     logger.info("Servicio de sincronización iniciado. Primera ejecución inmediata.")
     job_with_conn()
-    
+
     while not app_state["stop_event"].is_set():
         schedule.run_pending()
         time.sleep(1)
@@ -261,26 +312,35 @@ def run_scheduler_thread(connection_string):
 
 def get_menu(connection_string):
     """Genera el menú dinámico para el icono de la bandeja."""
-    def force_sync():
-        logger.info("Sincronización manual solicitada.")
-        threading.Thread(target=job, args=(connection_string,)).start()
 
-    yield item(
-        lambda text: f'Última Sincronización: {app_state["last_sync"]}',
-        None, enabled=False
-    )
+    def force_sync(icon_obj, menu_item):
+        logger.info("Sincronización manual solicitada.")
+        threading.Thread(target=job, args=(connection_string,), daemon=True).start()
+
+    def open_config(icon_obj, menu_item):
+        logger.info("Apertura de configuración solicitada.")
+        threading.Thread(target=launch_config_gui, daemon=True).start()
+
+    def _exit(icon_obj, menu_item):
+        exit_app(icon_obj, menu_item)
+
+    yield item(lambda i: f'Última Sincronización: {app_state["last_sync"]}', None, enabled=False)
     yield Menu.SEPARATOR
     yield item('Sincronizar Ahora', force_sync)
-    yield item('Salir', exit_app)
-    
-def exit_app(tray_icon):
+    yield item('Configurar...', open_config)
+    yield item('Salir', _exit)
+
+def exit_app(icon_obj, _menu_item):
     """Detiene los hilos y cierra la aplicación."""
     logger.info("Solicitud de salida recibida.")
     app_state["stop_event"].set()
-    tray_icon.stop()
+    try:
+        icon_obj.stop()
+    except Exception as e:
+        logger.debug(f"Error al detener icono: {e}")
     logger.info("Aplicación cerrada.")
 
-# --- PUNTO DE ENTRADA PRINCIPAL (Sin cambios) ---
+# --- PUNTO DE ENTRADA PRINCIPAL ---
 if __name__ == "__main__":
     if not os.path.exists(CONFIG_FILE):
         logger.warning(f"No se encontró '{CONFIG_FILE}'. Iniciando GUI de configuración.")
@@ -290,10 +350,8 @@ if __name__ == "__main__":
 
     logger.info(f"Archivo de configuración '{CONFIG_FILE}' encontrado. Iniciando servicio.")
     conn_str = get_connection_string()
-    
-    if conn_str:
-        app_state['tray_icon'] = None 
 
+    if conn_str:
         image = create_image()
         tray_icon = icon(
             'SyncICGFront',
@@ -301,14 +359,21 @@ if __name__ == "__main__":
             'Sincronizador ICG Front',
             menu=Menu(lambda: get_menu(conn_str))
         )
-        tray_icon.exit_app = lambda: exit_app(tray_icon)
-
         app_state['tray_icon'] = tray_icon
 
         scheduler_thread = threading.Thread(target=run_scheduler_thread, args=(conn_str,), daemon=True)
         scheduler_thread.start()
-        
+
+        # Bloquea hasta que se cierre el icono
         tray_icon.run()
+
+        # Cierre limpio
+        app_state["stop_event"].set()
+        schedule.clear()
+        try:
+            scheduler_thread.join(timeout=5)
+        except Exception:
+            pass
 
     else:
         logger.error("No se pudo iniciar. El archivo de configuración es inválido.")
