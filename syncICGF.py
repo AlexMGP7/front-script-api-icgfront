@@ -14,7 +14,8 @@ import time
 import base64
 import threading
 import tkinter as tk
-from tkinter import messagebox
+import hashlib
+from tkinter import messagebox, simpledialog
 import configparser
 import logging
 from logging.handlers import RotatingFileHandler
@@ -54,6 +55,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CONFIG_FILE_ENC = os.path.join(DATA_DIR, 'config.enc')               # nuevo (cifrado)
 CONFIG_FILE_LEGACY = os.path.join(DATA_DIR, 'config.ini')            # legado posible (en DATA_DIR)
 CONFIG_FILE_LEGACY_OLD = os.path.join(EXEC_DIR, 'config.ini')        # legado antiguo (junto al exe/py viejo)
+CONFIG_KEY_FILE = os.path.join(DATA_DIR, 'admin.key.enc')
 LOG_FILE = os.path.join(DATA_DIR, "icg_front_sync.log")
 ICON_FILE = os.path.join(RESOURCE_DIR, 'icon.png')
 
@@ -138,6 +140,89 @@ def _write_config_encrypted(cfg: configparser.ConfigParser, scope: str = "user")
     cipher = _dpapi_encrypt(buf.getvalue().encode('utf-8'), scope=scope)
     with open(CONFIG_FILE_ENC, 'w', encoding='utf-8') as f:
         f.write(cipher)
+        
+def _hash_key(key_str: str) -> str:
+    # Hash simple (DPAPI ya cifra en disco). Añadimos un "pepper" constante.
+    pepper = b'ICGFrontSync-ADMIN-PEPPER'
+    h = hashlib.sha256()
+    h.update(key_str.encode('utf-8') + pepper)
+    return h.hexdigest()
+
+def _write_admin_key(key_str: str):
+    digest = _hash_key(key_str).encode('utf-8')
+    cipher = _dpapi_encrypt(digest, scope="user")
+    with open(CONFIG_KEY_FILE, 'w', encoding='utf-8') as f:
+        f.write(cipher)
+
+def _read_admin_key_digest() -> str | None:
+    try:
+        with open(CONFIG_KEY_FILE, 'r', encoding='utf-8') as f:
+            b64 = f.read()
+        plain = _dpapi_decrypt(b64).decode('utf-8')
+        return plain
+    except Exception:
+        return None
+
+def _verify_admin_key(candidate: str) -> bool:
+    saved = _read_admin_key_digest()
+    if not saved:
+        return False
+    return _hash_key(candidate) == saved
+
+def _bootstrap_admin_key_ui() -> bool:
+    """
+    Abre un diálogo para crear la clave la primera vez (o si falta el fichero).
+    Devuelve True si se creó, False si el usuario canceló.
+    """
+    root = tk.Tk(); root.withdraw()
+    try:
+        while True:
+            k1 = simpledialog.askstring("Crear clave de administración",
+                                        "Crea una clave para proteger la configuración:",
+                                        show="*", parent=root)
+            if k1 is None:
+                return False
+            if len(k1.strip()) < 4:
+                messagebox.showerror("Clave demasiado corta", "Usa al menos 4 caracteres.")
+                continue
+            k2 = simpledialog.askstring("Confirmar clave",
+                                        "Repite la clave:",
+                                        show="*", parent=root)
+            if k2 is None:
+                return False
+            if k1 != k2:
+                messagebox.showerror("No coincide", "Las claves no coinciden. Inténtalo de nuevo.")
+                continue
+            _write_admin_key(k1)
+            messagebox.showinfo("Clave guardada", "La clave de administración se ha establecido.")
+            return True
+    finally:
+        root.destroy()
+
+def _require_admin_key_then(action_callable):
+    """
+    Pide la clave (o la crea si no existe) y si es correcta ejecuta 'action_callable'.
+    """
+    root = tk.Tk(); root.withdraw()
+    try:
+        # Si no hay clave, pedir crearla
+        if not os.path.exists(CONFIG_KEY_FILE):
+            created = _bootstrap_admin_key_ui()
+            if not created:
+                return
+        # Pedir clave para continuar
+        k = simpledialog.askstring("Clave de administración",
+                                   "Introduce la clave para configurar:",
+                                   show="*", parent=root)
+        if k is None:
+            return
+        if not _verify_admin_key(k):
+            messagebox.showerror("Clave incorrecta", "La clave no es válida.")
+            return
+        # Clave OK → ejecutar acción
+        action_callable()
+    finally:
+        root.destroy()
 
 def migrate_legacy_ini_if_needed():
     """
@@ -216,15 +301,12 @@ def launch_config_gui():
     # Separador visual
     tk.Frame(frame, height=2, bg="grey").grid(row=4, columnspan=2, pady=10, sticky="ew")
 
-    # --- NUEVOS CAMPOS DE TIENDA ---
-    tk.Label(frame, text="Marca (BBW/VS/LCW):").grid(row=5, column=0, sticky="w", pady=2)
-    entry_marca = tk.Entry(frame, width=40); entry_marca.grid(row=5, column=1, pady=2)
+    # --- CAMPOS DE TIENDA (sin Marca) ---
+    tk.Label(frame, text="País (PAN/COL/etc.):").grid(row=5, column=0, sticky="w", pady=2)
+    entry_pais = tk.Entry(frame, width=40); entry_pais.grid(row=5, column=1, pady=2)
 
-    tk.Label(frame, text="País (PAN/COL/etc.):").grid(row=6, column=0, sticky="w", pady=2)
-    entry_pais = tk.Entry(frame, width=40); entry_pais.grid(row=6, column=1, pady=2)
-
-    tk.Label(frame, text="Tipo Tienda (Retail/Ecommerce):").grid(row=7, column=0, sticky="w", pady=2)
-    entry_tipo = tk.Entry(frame, width=40); entry_tipo.grid(row=7, column=1, pady=2)
+    tk.Label(frame, text="Tipo Tienda (Retail/Ecommerce):").grid(row=6, column=0, sticky="w", pady=2)
+    entry_tipo = tk.Entry(frame, width=40); entry_tipo.grid(row=6, column=1, pady=2)
 
     # Precarga si existe config.enc
     try:
@@ -234,9 +316,7 @@ def launch_config_gui():
                 entry_server.insert(0, cfg_pre['Database'].get('Server', ''))
                 entry_database.insert(0, cfg_pre['Database'].get('Database', ''))
                 entry_user.insert(0, cfg_pre['Database'].get('UID', ''))
-                # Por seguridad no precargamos la contraseña visible
             if 'StoreInfo' in cfg_pre:
-                entry_marca.insert(0, cfg_pre['StoreInfo'].get('Marca', ''))
                 entry_pais.insert(0, cfg_pre['StoreInfo'].get('Pais', ''))
                 entry_tipo.insert(0, cfg_pre['StoreInfo'].get('TipoTienda', ''))
     except Exception as e:
@@ -248,12 +328,11 @@ def launch_config_gui():
         database = entry_database.get().strip()
         user = entry_user.get().strip()
         password = entry_password.get().strip()
-        # Datos de la tienda
-        marca = entry_marca.get().strip()
+        # Datos de la tienda (sin marca)
         pais = entry_pais.get().strip()
         tipo_tienda = entry_tipo.get().strip()
 
-        if not all([server, database, user, password, marca, pais, tipo_tienda]):
+        if not all([server, database, user, password, pais, tipo_tienda]):
             messagebox.showerror("Error", "Todos los campos son obligatorios.")
             return
 
@@ -272,13 +351,11 @@ def launch_config_gui():
             'PWD': password  # en claro en memoria; se cifra al guardar
         }
         config['StoreInfo'] = {
-            'Marca': marca,
             'Pais': pais,
             'TipoTienda': tipo_tienda
         }
 
         try:
-            # 1) Prueba la conexión con pymssql
             ok, err = _test_db_connection(server, database, user, password, timeout=10)
             if not ok:
                 messagebox.showerror(
@@ -286,9 +363,8 @@ def launch_config_gui():
                     "No se guardó la configuración porque la conexión a la base de datos falló:\n\n"
                     f"{err}"
                 )
-                return  # <- Importante: NO GUARDAR
+                return
 
-            # 2) Solo si la conexión fue exitosa, persistimos cifrado
             _write_config_encrypted(config, scope="user")
             messagebox.showinfo(
                 "Éxito",
@@ -304,9 +380,10 @@ def launch_config_gui():
             )
 
     save_button = tk.Button(frame, text="Guardar Configuración", command=save_settings, width=30)
-    save_button.grid(row=8, columnspan=2, pady=20)
+    save_button.grid(row=7, columnspan=2, pady=20)
 
     root.mainloop()
+
 
 # --- LÓGICA DE CONEXIÓN (pymssql) ---
 def _test_db_connection(server: str, database: str, uid: str, pwd: str, timeout: int = 10):
@@ -454,7 +531,6 @@ def get_store_info():
         cfg = _read_config_decrypted()
         store = cfg['StoreInfo']
         return {
-            'marca': store['Marca'],
             'pais': store['Pais'],
             'tipo_tienda': store['TipoTienda']
         }
@@ -472,7 +548,7 @@ def job(server: str, database: str, uid: str, pwd: str):
 
     if datos_rescatados:
         if store_info:
-            logger.info(f"Contexto: Marca={store_info['marca']}, País={store_info['pais']}, Tipo={store_info['tipo_tienda']}")
+            logger.info(f"Contexto: País={store_info['pais']}, Tipo={store_info['tipo_tienda']}")
         else:
             logger.warning("No se pudo cargar la información de la tienda desde config.enc.")
 
@@ -537,7 +613,8 @@ def get_menu(server: str, database: str, uid: str, pwd: str):
 
     def open_config(icon_obj, menu_item):
         logger.info("Apertura de configuración solicitada.")
-        threading.Thread(target=launch_config_gui, daemon=True).start()
+        # Pide/valida clave y solo entonces abre la GUI
+        threading.Thread(target=lambda: _require_admin_key_then(launch_config_gui), daemon=True).start()
 
     def _exit(icon_obj, menu_item):
         exit_app(icon_obj, menu_item)
@@ -625,6 +702,21 @@ if __name__ == "__main__":
                 scheduler_thread.join(timeout=5)
             except Exception:
                 pass
+
+    if not os.path.exists(CONFIG_FILE_ENC):
+        logger.warning(f"No se encontró '{CONFIG_FILE_ENC}'. Iniciando bootstrap de clave y GUI de configuración.")
+        # Si no existe clave, crearla primero
+        if not os.path.exists(CONFIG_KEY_FILE):
+            created = _bootstrap_admin_key_ui()
+            if not created:
+                sys.exit("No se creó la clave de administración. Saliendo.")
+        try:
+            launch_config_gui()
+            logger.info("Configuración no encontrada. El programa se cerrará.")
+            sys.exit("Configuración guardada. Por favor, reinicie la aplicación.")
+        except Exception as e:
+            logger.error(f"No se pudo abrir la GUI de configuración: {e}")
+            sys.exit(1)
 
     else:
         logger.error("No se pudo iniciar. El archivo de configuración es inválido o no se pudo descifrar.")
