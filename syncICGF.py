@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-ICG Front Sync - Configuración cifrada con DPAPI (Windows)
-- Almacena TODO el INI cifrado en config.enc (base64 de blob DPAPI)
-- Migra automáticamente desde config.ini (antiguo con PWD_b64) si existe
-- La GUI solo lee/escribe a través de la app
+ICG Front Sync - Configuración cifrada con DPAPI (Windows) + Directorios saneados + Scheduler eficiente
+- Almacena TODO el INI cifrado en config.enc (base64 de blob DPAPI) en %LOCALAPPDATA%\ICGFrontSync
+- Migra automáticamente desde config.ini legado (ubicaciones antiguas) si existe
+- GUI solo lee/escribe a través de la app
+- SIN ODBC: usa pymssql (driver puro) para SQL Server
 """
 
 import os
@@ -18,7 +19,12 @@ import configparser
 import logging
 from logging.handlers import RotatingFileHandler
 
-import pyodbc
+# --- BBDD: SIN ODBC (pymssql) ---
+try:
+    import pymssql  # pip install pymssql
+except Exception:
+    pymssql = None
+
 import schedule
 from pystray import MenuItem as item, Icon as icon, Menu
 from PIL import Image, ImageDraw, ImageFont
@@ -32,6 +38,25 @@ if sys.platform == 'win32':
 else:
     win32crypt = None
 
+# --- NOMBRE APP Y DIRECTORIOS ---
+APP_NAME = "ICGFrontSync"
+
+# Directorio de RECURSOS (solo lectura, donde viven los assets empaquetados)
+RESOURCE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+# Directorio de EJECUCIÓN (donde está el exe/py; útil para migración legado)
+EXEC_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+
+# Directorio de DATOS (lectura/escritura segura por usuario)
+DATA_DIR = os.path.join(os.environ.get('LOCALAPPDATA', EXEC_DIR), APP_NAME)
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# Rutas de archivos
+CONFIG_FILE_ENC = os.path.join(DATA_DIR, 'config.enc')               # nuevo (cifrado)
+CONFIG_FILE_LEGACY = os.path.join(DATA_DIR, 'config.ini')            # legado posible (en DATA_DIR)
+CONFIG_FILE_LEGACY_OLD = os.path.join(EXEC_DIR, 'config.ini')        # legado antiguo (junto al exe/py viejo)
+LOG_FILE = os.path.join(DATA_DIR, "icg_front_sync.log")
+ICON_FILE = os.path.join(RESOURCE_DIR, 'icon.png')
+
 # --- ESTADO GLOBAL DE LA APLICACIÓN ---
 app_state = {
     "last_sync": "Nunca",
@@ -39,46 +64,40 @@ app_state = {
     "tray_icon": None,
 }
 
-# --- CONFIGURACIÓN DE RUTAS ---
-if getattr(sys, 'frozen', False):
-    BASE_DIR = os.path.dirname(sys.executable)
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-CONFIG_FILE_LEGACY = os.path.join(BASE_DIR, 'config.ini')      # antiguo (sin cifrar)
-CONFIG_FILE_ENC = os.path.join(BASE_DIR, 'config.enc')         # nuevo (cifrado)
-LOG_FILE = os.path.join(BASE_DIR, "icg_front_sync.log")
-ICON_FILE = os.path.join(BASE_DIR, 'icon.png')
-
 # --- LOGGING ---
-log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-log_handler = RotatingFileHandler(LOG_FILE, mode='a', maxBytes=1*1024*1024,
-                                  backupCount=5, encoding='utf-8', delay=0)
-log_handler.setFormatter(log_formatter)
-
-logger = logging.getLogger('icg_front_sync')
-if not logger.handlers:
+def _setup_logging():
+    logger = logging.getLogger('icg_front_sync')
+    if logger.handlers:
+        return logger
     logger.setLevel(logging.INFO)
+    try:
+        log_handler = RotatingFileHandler(LOG_FILE, mode='a', maxBytes=1*1024*1024,
+                                          backupCount=5, encoding='utf-8', delay=0)
+    except Exception:
+        # Si por alguna razón falla el archivo (permisos, etc.), baja a consola
+        log_handler = logging.StreamHandler()
+    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    log_handler.setFormatter(log_formatter)
     logger.addHandler(log_handler)
-    
-if getattr(sys, 'frozen', False):
-    # Soporta --onefile con sys._MEIPASS
-    BASE_DIR = getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    return logger
+
+logger = _setup_logging()
 
 # --- UTILIDADES DPAPI ---
 def _ensure_dpapi():
     if sys.platform != 'win32' or win32crypt is None:
         raise RuntimeError("La protección DPAPI requiere Windows y el paquete 'pywin32'.")
 
-def _dpapi_encrypt(plaintext: bytes, scope="user") -> str:
+def _dpapi_encrypt(plaintext: bytes, scope: str = "user") -> str:
     """
     Cifra bytes con DPAPI. scope: 'user' (por defecto) o 'machine'.
-    Devuelve base64 del blob cifrado para almacenarlo como texto.
+    Devuelve base64 (str) del blob cifrado para almacenarlo como texto.
+
+    Importante:
+    - Usamos 'optional entropy' constante para la app. Debe coincidir en Protect/Unprotect.
     """
     _ensure_dpapi()
-    entropy = b'ICGFrontSync v1'  # 'sal' adicional constante para la app
+    entropy = b'ICGFrontSync v1'  # 'sal' adicional constante
     flags = 0 if scope == 'user' else 0x4  # CRYPTPROTECT_LOCAL_MACHINE = 0x4
     encrypted_blob = win32crypt.CryptProtectData(plaintext, None, entropy, None, None, flags)
     return base64.b64encode(encrypted_blob).decode('utf-8')
@@ -86,12 +105,17 @@ def _dpapi_encrypt(plaintext: bytes, scope="user") -> str:
 def _dpapi_decrypt(b64cipher: str) -> bytes:
     """
     Descifra el base64 generado por _dpapi_encrypt y devuelve bytes en claro.
+    Orden correcto de argumentos: (Data, OptionalEntropy, Reserved, PromptStruct, Flags)
     """
     _ensure_dpapi()
     entropy = b'ICGFrontSync v1'
     encrypted_blob = base64.b64decode(b64cipher)
-    # CryptUnprotectData -> (description, data)
-    return win32crypt.CryptUnprotectData(encrypted_blob, entropy, None, None, 0)[1]
+    try:
+        # Correcto: la entropy va en el 2º argumento
+        return win32crypt.CryptUnprotectData(encrypted_blob, entropy, None, None, 0)[1]
+    except Exception:
+        # Compatibilidad: intenta sin entropy por si el archivo se creó sin ella
+        return win32crypt.CryptUnprotectData(encrypted_blob, None, None, None, 0)[1]
 
 def _read_config_decrypted() -> configparser.ConfigParser:
     """
@@ -105,7 +129,7 @@ def _read_config_decrypted() -> configparser.ConfigParser:
     cfg.read_string(plaintext.decode('utf-8'))
     return cfg
 
-def _write_config_encrypted(cfg: configparser.ConfigParser, scope="user"):
+def _write_config_encrypted(cfg: configparser.ConfigParser, scope: str = "user"):
     """
     Cifra todo el INI y lo guarda en config.enc (texto base64).
     """
@@ -117,18 +141,28 @@ def _write_config_encrypted(cfg: configparser.ConfigParser, scope="user"):
 
 def migrate_legacy_ini_if_needed():
     """
-    Si hay config.ini con PWD_b64 y no hay config.enc, migrar y eliminar el .ini.
+    Si hay config.ini con PWD_b64 y no hay config.enc, migrar y eliminar el/los ini(s) legado(s).
+    Busca en DATA_DIR y en EXEC_DIR para compatibilidad hacia atrás.
     """
     try:
         if os.path.exists(CONFIG_FILE_ENC):
             return
-        if not os.path.exists(CONFIG_FILE_LEGACY):
+
+        candidates = []
+        if os.path.exists(CONFIG_FILE_LEGACY):
+            candidates.append(CONFIG_FILE_LEGACY)
+        if os.path.exists(CONFIG_FILE_LEGACY_OLD):
+            candidates.append(CONFIG_FILE_LEGACY_OLD)
+
+        if not candidates:
             return
 
+        # Usa el primero que exista (preferencia por DATA_DIR)
+        src_ini = candidates[0]
         legacy = configparser.ConfigParser()
-        legacy.read(CONFIG_FILE_LEGACY, encoding='utf-8')
+        legacy.read(src_ini, encoding='utf-8')
 
-        # Normaliza el campo de password
+        # Normaliza password desde PWD_b64
         if 'Database' in legacy:
             if 'PWD_b64' in legacy['Database']:
                 try:
@@ -139,17 +173,21 @@ def migrate_legacy_ini_if_needed():
                 legacy['Database'].pop('PWD_b64', None)
 
         _write_config_encrypted(legacy, scope="user")
-        try:
-            os.remove(CONFIG_FILE_LEGACY)
-        except Exception:
-            pass
-        logger.info("Migración de config.ini -> config.enc completada.")
+
+        # Intenta remover INIs legado
+        for path in candidates:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+        logger.info(f"Migración de config.ini -> config.enc completada desde {src_ini} a {CONFIG_FILE_ENC}.")
     except Exception as e:
-        logger.error(f"Fallo migrando config.ini: {e}")
+        logger.exception(f"Fallo migrando config.ini: {e}")
 
 # --- INTERFAZ GRÁFICA DE CONFIGURACIÓN ---
 def launch_config_gui():
-    """Crea y muestra una ventana para guardar las credenciales y la info de la tienda (en cifrado)."""
+    """Crea y muestra una ventana para guardar las credenciales y la info de la tienda (cifrada)."""
     root = tk.Tk()
     root.title("Configuración de Conexión y Tienda")
     root.withdraw()
@@ -219,12 +257,19 @@ def launch_config_gui():
             messagebox.showerror("Error", "Todos los campos son obligatorios.")
             return
 
+        if pymssql is None:
+            messagebox.showerror(
+                "Dependencia faltante",
+                "No se encontró el módulo 'pymssql'. Instálalo antes de continuar (pip install pymssql)."
+            )
+            return
+
         config = configparser.ConfigParser()
         config['Database'] = {
             'Server': server,
             'Database': database,
             'UID': user,
-            'PWD': password  # en claro dentro del INI en memoria; se cifra al guardar a disco
+            'PWD': password  # en claro en memoria; se cifra al guardar
         }
         config['StoreInfo'] = {
             'Marca': marca,
@@ -233,35 +278,175 @@ def launch_config_gui():
         }
 
         try:
-            _write_config_encrypted(config, scope="user")  # usar "machine" si debe compartir entre usuarios del equipo
-            messagebox.showinfo("Éxito", "Configuración guardada. Reinicie la aplicación para comenzar la sincronización.")
+            # 1) Prueba la conexión con pymssql
+            ok, err = _test_db_connection(server, database, user, password, timeout=10)
+            if not ok:
+                messagebox.showerror(
+                    "No se pudo conectar",
+                    "No se guardó la configuración porque la conexión a la base de datos falló:\n\n"
+                    f"{err}"
+                )
+                return  # <- Importante: NO GUARDAR
+
+            # 2) Solo si la conexión fue exitosa, persistimos cifrado
+            _write_config_encrypted(config, scope="user")
+            messagebox.showinfo(
+                "Éxito",
+                "Conexión verificada y configuración guardada.\nReinicie la aplicación para comenzar la sincronización."
+            )
             root.destroy()
+
         except Exception as e:
-            messagebox.showerror("Error al guardar", f"No se pudo escribir el archivo de configuración cifrado:\n{e}")
+            logger.exception("Error al guardar configuración cifrada")
+            messagebox.showerror(
+                "Error al guardar",
+                f"No se pudo completar el guardado de la configuración cifrada:\n{e}"
+            )
 
     save_button = tk.Button(frame, text="Guardar Configuración", command=save_settings, width=30)
     save_button.grid(row=8, columnspan=2, pady=20)
 
     root.mainloop()
 
-# --- LÓGICA DE SINCRONIZACIÓN ---
-def get_connection_string():
-    """Descifra config.enc y construye la cadena de conexión."""
+# --- LÓGICA DE CONEXIÓN (pymssql) ---
+def _test_db_connection(server: str, database: str, uid: str, pwd: str, timeout: int = 10):
+    """Intenta conectar vía pymssql; devuelve (True, None) o (False, 'error')."""
+    if pymssql is None:
+        return False, "No se encontró el módulo 'pymssql'."
+    try:
+        # Nota: soporta 'SERVER,PUERTO' o 'SERVER:PUERTO' en 'server'
+        conn = pymssql.connect(server=server, user=uid, password=pwd, database=database,
+                               login_timeout=timeout, timeout=timeout, charset='UTF-8')
+        conn.close()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def get_connection_params_from_config():
+    """Descifra config.enc y devuelve tupla (server, database, uid, pwd)."""
     try:
         cfg = _read_config_decrypted()
         db = cfg['Database']
-        server, database, uid, pwd = db['Server'], db['Database'], db['UID'], db['PWD']
-
-        # Detectar driver 18 o 17 (el que esté disponible)
-        available = pyodbc.drivers()
-        driver = next((d for d in ("ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server") if d in available), None)
-        if driver is None:
-            driver = "ODBC Driver 17 for SQL Server"  # fallback
-
-        return f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};UID={uid};PWD={pwd}"
+        return db['Server'], db['Database'], db['UID'], db['PWD']
     except Exception as e:
         logger.error(f"Error al leer/descifrar la configuración de BD: {e}")
         return None
+
+# --- LÓGICA DE LECTURA DE DATOS ---
+def get_data_from_front(server: str, database: str, uid: str, pwd: str):
+    """Se conecta a la BD, ejecuta la consulta y devuelve los resultados como lista de dicts. Incluye reintentos."""
+    if pymssql is None:
+        logger.error("No se encontró 'pymssql'. Abortando consulta.")
+        return None
+
+    sql_query = """
+    ;WITH VentasAgregadas AS (
+    SELECT
+        -- Si el JOIN no encuentra marca, se asigna un valor por defecto.
+        ISNULL(S.DESCRIPCION, 'Marca No Definida') AS Marca, 
+        ALM.NOMBREALMACEN AS Tienda,
+        FV.CAJA,
+        COUNT(DISTINCT FV.NUMSERIE + '-' + CAST(FV.NUMFACTURA AS VARCHAR)) AS NumeroFacturas,
+        SUM(AL.TOTAL) AS ImporteFacturas
+    FROM
+        FACTURASVENTA FV
+    INNER JOIN ALBVENTACAB AC ON FV.NUMSERIE = AC.NUMSERIEFAC AND FV.NUMFACTURA = AC.NUMFAC AND FV.N = AC.NFAC
+    INNER JOIN ALBVENTALIN AL ON AC.NUMSERIE = AL.NUMSERIE AND AC.NUMALBARAN = AL.NUMALBARAN AND AC.N = AL.N
+    INNER JOIN ALMACEN ALM ON AL.CODALMACEN = ALM.CODALMACEN
+    -- Se cambia a LEFT JOIN para no excluir ventas si la serie no existe en la tabla SERIES.
+    LEFT JOIN SERIES S ON SUBSTRING(FV.NUMSERIE, 1, 2) = S.SERIE 
+    WHERE
+        CAST(FV.FECHA AS DATE) = CAST(GETDATE() AS DATE)
+    GROUP BY
+        ISNULL(S.DESCRIPCION, 'Marca No Definida'),
+        ALM.NOMBREALMACEN, 
+        FV.CAJA
+),
+ComprasAgregadas AS (
+    SELECT
+        ISNULL(S.DESCRIPCION, 'Marca No Definida') AS Marca,
+        ALM.NOMBREALMACEN AS Tienda,
+        COUNT(DISTINCT ACC.NUMSERIE + '-' + CAST(ACC.NUMALBARAN AS VARCHAR)) AS NumeroCompras,
+        SUM(ACL.TOTAL) AS ImporteCompras
+    FROM
+        ALBCOMPRACAB ACC
+    INNER JOIN ALBCOMPRALIN ACL ON ACC.NUMSERIE = ACL.NUMSERIE AND ACC.NUMALBARAN = ACC.NUMALBARAN AND ACC.N = ACL.N
+    INNER JOIN ALMACEN ALM ON ACL.CODALMACEN = ALM.CODALMACEN
+    -- Se cambia a LEFT JOIN para no excluir compras.
+    LEFT JOIN SERIES S ON SUBSTRING(ACC.NUMSERIE, 1, 2) = S.SERIE
+    WHERE
+        CAST(ACC.FECHAALBARAN AS DATE) = CAST(GETDATE() AS DATE)
+    GROUP BY
+        ISNULL(S.DESCRIPCION, 'Marca No Definida'),
+        ALM.NOMBREALMACEN
+),
+Pendientes AS (
+    SELECT
+        RT.CAJA AS Caja,
+        COUNT(RT.ID) AS TransaccionesPendientes
+    FROM
+        REM_TRANSACCIONES RT
+    WHERE
+        RT.IDCENTRAL = -1
+    GROUP BY
+        RT.CAJA
+),
+TransaccionesTotales AS (
+    SELECT
+        RT.CAJA AS Caja,
+        COUNT(RT.ID) AS TransaccionesGenerales
+    FROM
+        REM_TRANSACCIONES RT
+    GROUP BY
+        RT.CAJA
+),
+MovimientosConsolidados AS (
+    SELECT Marca, Tienda, Caja, NumeroFacturas, ImporteFacturas, 0 AS NumeroCompras, 0 AS ImporteCompras FROM VentasAgregadas
+    UNION ALL
+    SELECT Marca, Tienda, NULL AS Caja, 0 AS NumeroFacturas, 0 AS ImporteFacturas, NumeroCompras, ImporteCompras FROM ComprasAgregadas
+)
+SELECT
+    MC.Marca, 
+    MC.Tienda,
+    MC.Caja,
+    SUM(MC.NumeroFacturas) AS Numero_de_Facturas,
+    SUM(MC.ImporteFacturas) AS Importe_Facturas,
+    SUM(MC.NumeroCompras) AS Numero_de_Compras,
+    SUM(MC.ImporteCompras) AS Importe_Compras,
+    MAX(ISNULL(TT.TransaccionesGenerales, 0)) AS Transacciones_Totales,
+    MAX(ISNULL(P.TransaccionesPendientes, 0)) AS Transacciones_Pendientes
+FROM
+    MovimientosConsolidados MC
+LEFT JOIN
+    Pendientes P ON MC.Caja = P.Caja
+LEFT JOIN
+    TransaccionesTotales TT ON MC.Caja = TT.Caja
+GROUP BY
+    MC.Marca, 
+    MC.Tienda, 
+    MC.Caja
+ORDER BY
+    MC.Marca, 
+    MC.Tienda, 
+    MC.Caja;
+    """
+
+    for attempt in range(1, 4):
+        try:
+            with pymssql.connect(server=server, user=uid, password=pwd, database=database,
+                                 login_timeout=10, timeout=30, charset='UTF-8') as conn:
+                with conn.cursor(as_dict=True) as cursor:
+                    cursor.execute(sql_query)
+                    rows = cursor.fetchall()  # lista de dicts
+            logger.info(f"Se obtuvieron {len(rows)} registros (intento {attempt}).")
+            app_state["last_sync"] = time.strftime('%d-%m-%Y %H:%M:%S')
+            return rows
+        except Exception as e:
+            logger.warning(f"Error al conectar o consultar la BD (intento {attempt}/3): {e}")
+            time.sleep(2 * attempt)
+
+    logger.error("Falló la consulta tras 3 intentos.")
+    return None
 
 def get_store_info():
     """Descifra y lee la información de la tienda desde config.enc."""
@@ -277,91 +462,13 @@ def get_store_info():
         logger.error(f"Error al leer la configuración de la tienda: {e}")
         return None
 
-def get_data_from_front(connection_string):
-    """Se conecta a la BD, ejecuta la consulta y devuelve los resultados. Incluye reintentos."""
-    if not connection_string:
-        logger.error("No se pudo obtener la cadena de conexión. Abortando consulta.")
-        return None
-
-    sql_query = """
-    WITH VentasAgregadas AS (
-        SELECT ALM.NOMBREALMACEN AS Tienda, FV.CAJA,
-               COUNT(DISTINCT FV.NUMSERIE + '-' + CAST(FV.NUMFACTURA AS VARCHAR)) AS NumeroFacturas,
-               SUM(AL.TOTAL) AS ImporteFacturas
-        FROM FACTURASVENTA FV
-        INNER JOIN ALBVENTACAB AC
-            ON FV.NUMSERIE = AC.NUMSERIEFAC AND FV.NUMFACTURA = AC.NUMFAC AND FV.N = AC.NFAC
-        INNER JOIN ALBVENTALIN AL
-            ON AC.NUMSERIE = AL.NUMSERIE AND AC.NUMALBARAN = AL.NUMALBARAN AND AC.N = AL.N
-        INNER JOIN ALMACEN ALM
-            ON AL.CODALMACEN = ALM.CODALMACEN
-        WHERE CAST(FV.FECHA AS DATE) = CAST(GETDATE() AS DATE)
-        GROUP BY ALM.NOMBREALMACEN, FV.CAJA
-    ), ComprasAgregadas AS (
-        SELECT ALM.NOMBREALMACEN AS Tienda,
-               COUNT(DISTINCT ACC.NUMSERIE + '-' + CAST(ACC.NUMALBARAN AS VARCHAR)) AS NumeroCompras,
-               SUM(ACL.TOTAL) AS ImporteCompras
-        FROM ALBCOMPRACAB ACC
-        INNER JOIN ALBCOMPRALIN ACL
-            ON ACC.NUMSERIE = ACL.NUMSERIE AND ACC.NUMALBARAN = ACL.NUMALBARAN AND ACC.N = ACL.N
-        INNER JOIN ALMACEN ALM
-            ON ACL.CODALMACEN = ALM.CODALMACEN
-        WHERE CAST(ACC.FECHAALBARAN AS DATE) = CAST(GETDATE() AS DATE)
-        GROUP BY ALM.NOMBREALMACEN
-    ), Pendientes AS (
-        SELECT RT.CAJA AS Caja, COUNT(RT.ID) AS TransaccionesPendientes
-        FROM REM_TRANSACCIONES RT
-        WHERE RT.IDCENTRAL = -1
-        GROUP BY RT.CAJA
-    ), TransaccionesTotales AS (
-        SELECT RT.CAJA AS Caja, COUNT(RT.ID) AS TransaccionesGenerales
-        FROM REM_TRANSACCIONES RT
-        GROUP BY RT.CAJA
-    ), MovimientosConsolidados AS (
-        SELECT Tienda, Caja, NumeroFacturas, ImporteFacturas, 0 AS NumeroCompras, 0 AS ImporteCompras
-        FROM VentasAgregadas
-        UNION ALL
-        SELECT Tienda, NULL AS Caja, 0 AS NumeroFacturas, 0 AS ImporteFacturas, NumeroCompras, ImporteCompras
-        FROM ComprasAgregadas
-    )
-    SELECT MC.Tienda, MC.Caja,
-           SUM(MC.NumeroFacturas) AS Numero_de_Facturas,
-           SUM(MC.ImporteFacturas) AS Importe_Facturas,
-           SUM(MC.NumeroCompras) AS Numero_de_Compras,
-           SUM(MC.ImporteCompras) AS Importe_Compras,
-           MAX(ISNULL(TT.TransaccionesGenerales, 0)) AS Transacciones_Totales,
-           MAX(ISNULL(P.TransaccionesPendientes, 0)) AS Transacciones_Pendientes
-    FROM MovimientosConsolidados MC
-    LEFT JOIN Pendientes P ON MC.Caja = P.Caja
-    LEFT JOIN TransaccionesTotales TT ON MC.Caja = TT.Caja
-    GROUP BY MC.Tienda, MC.Caja
-    ORDER BY MC.Tienda, MC.Caja;
-    """
-
-    for attempt in range(1, 4):
-        try:
-            with pyodbc.connect(connection_string, timeout=10) as conn:
-                cursor = conn.cursor()
-                cursor.execute(sql_query)
-                columnas = [column[0] for column in cursor.description]
-                datos_nuevos = [dict(zip(columnas, fila)) for fila in cursor.fetchall()]
-            logger.info(f"Se obtuvieron {len(datos_nuevos)} registros (intento {attempt}).")
-            app_state["last_sync"] = time.strftime('%d-%m-%Y %H:%M:%S')
-            return datos_nuevos
-        except Exception as e:
-            logger.warning(f"Error al conectar o consultar la BD (intento {attempt}/3): {e}")
-            time.sleep(2 * attempt)
-
-    logger.error("Falló la consulta tras 3 intentos.")
-    return None
-
 # --- LÓGICA DE JOB ---
-def job(connection_string):
+def job(server: str, database: str, uid: str, pwd: str):
     """Tarea de trabajo que se ejecuta en cada ciclo."""
     logger.info("--- Iniciando ciclo de sincronización ---")
 
     store_info = get_store_info()
-    datos_rescatados = get_data_from_front(connection_string)
+    datos_rescatados = get_data_from_front(server, database, uid, pwd)
 
     if datos_rescatados:
         if store_info:
@@ -382,7 +489,7 @@ def job(connection_string):
 
 # --- LÓGICA DE LA BANDEJA DEL SISTEMA ---
 def create_image():
-    """Crea una imagen genérica si icon.png no existe."""
+    """Crea una imagen genérica si icon.png no existe (desde RESOURCE_DIR)."""
     if os.path.exists(ICON_FILE):
         try:
             return Image.open(ICON_FILE)
@@ -408,25 +515,25 @@ def create_image():
     draw.text(((width - tw) // 2, (height - th) // 2), "S", fill="white", font=font)
     return image
 
-def run_scheduler_thread(connection_string):
-    """Hilo que ejecuta las tareas programadas."""
-    job_with_conn = lambda: job(connection_string)
+def run_scheduler_thread(server: str, database: str, uid: str, pwd: str):
+    """Hilo que ejecuta las tareas programadas sin busy-wait."""
+    job_with_params = lambda: job(server, database, uid, pwd)
 
-    schedule.every(15).minutes.do(job_with_conn)
+    schedule.every(15).minutes.do(job_with_params)
 
     logger.info("Servicio de sincronización iniciado. Primera ejecución inmediata.")
-    job_with_conn()
+    job_with_params()
 
-    while not app_state["stop_event"].is_set():
+    # Bucle eficiente: espera hasta 1s o hasta que se pida parar
+    while not app_state["stop_event"].wait(1):
         schedule.run_pending()
-        time.sleep(1)
     logger.info("Hilo de scheduler detenido.")
 
-def get_menu(connection_string):
+def get_menu(server: str, database: str, uid: str, pwd: str):
     """Genera el menú dinámico para el icono de la bandeja."""
     def force_sync(icon_obj, menu_item):
         logger.info("Sincronización manual solicitada.")
-        threading.Thread(target=job, args=(connection_string,), daemon=True).start()
+        threading.Thread(target=job, args=(server, database, uid, pwd), daemon=True).start()
 
     def open_config(icon_obj, menu_item):
         logger.info("Apertura de configuración solicitada.")
@@ -456,6 +563,30 @@ if __name__ == "__main__":
     # Migrar desde .ini si aplica
     migrate_legacy_ini_if_needed()
 
+    # Validaciones de dependencias
+    if sys.platform != 'win32' or win32crypt is None:
+        # Podemos dejar arrancar la GUI para informar, pero no continuar sin DPAPI
+        msg = "Esta aplicación requiere Windows y el paquete 'pywin32' para cifrado DPAPI."
+        logger.error(msg)
+        try:
+            root = tk.Tk(); root.withdraw()
+            messagebox.showerror("Requisito no cumplido", msg)
+            root.destroy()
+        except Exception:
+            pass
+        sys.exit(1)
+
+    if pymssql is None:
+        msg = "Dependencia faltante: instale 'pymssql' (pip install pymssql) para conectar a SQL Server sin ODBC."
+        logger.error(msg)
+        try:
+            root = tk.Tk(); root.withdraw()
+            messagebox.showerror("Dependencia faltante", msg)
+            root.destroy()
+        except Exception:
+            pass
+        sys.exit(1)
+
     if not os.path.exists(CONFIG_FILE_ENC):
         logger.warning(f"No se encontró '{CONFIG_FILE_ENC}'. Iniciando GUI de configuración.")
         try:
@@ -464,25 +595,23 @@ if __name__ == "__main__":
             sys.exit("Configuración guardada. Por favor, reinicie la aplicación.")
         except Exception as e:
             logger.error(f"No se pudo abrir la GUI de configuración: {e}")
-            # Mensaje claro si falta DPAPI/pywin32
-            if sys.platform != 'win32' or win32crypt is None:
-                sys.exit("Esta aplicación requiere Windows y el paquete 'pywin32' para cifrado DPAPI.")
             sys.exit(1)
 
     logger.info(f"Archivo de configuración cifrado '{CONFIG_FILE_ENC}' encontrado. Iniciando servicio.")
-    conn_str = get_connection_string()
+    params = get_connection_params_from_config()
 
-    if conn_str:
+    if params:
+        server, database, uid, pwd = params
         image = create_image()
         tray_icon = icon(
             'SyncICGFront',
             image,
             'Sincronizador ICG Front',
-            menu=Menu(lambda: get_menu(conn_str))
+            menu=Menu(lambda: get_menu(server, database, uid, pwd))
         )
         app_state['tray_icon'] = tray_icon
 
-        scheduler_thread = threading.Thread(target=run_scheduler_thread, args=(conn_str,), daemon=True)
+        scheduler_thread = threading.Thread(target=run_scheduler_thread, args=(server, database, uid, pwd), daemon=True)
         scheduler_thread.start()
 
         # Bloquea hasta que se cierre el icono
@@ -499,8 +628,12 @@ if __name__ == "__main__":
 
     else:
         logger.error("No se pudo iniciar. El archivo de configuración es inválido o no se pudo descifrar.")
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showerror("Error de Configuración", "No se pudo iniciar. 'config.enc' es inválido o no se pudo descifrar.\nBorre el archivo para reconfigurar.")
-        root.destroy()
+        try:
+            root = tk.Tk(); root.withdraw()
+            messagebox.showerror("Error de Configuración",
+                                 "No se pudo iniciar. 'config.enc' es inválido o no se pudo descifrar.\n"
+                                 "Borre el archivo para reconfigurar.")
+            root.destroy()
+        except Exception:
+            pass
         sys.exit("Error en la configuración.")
