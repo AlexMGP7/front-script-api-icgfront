@@ -21,7 +21,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 import json
-
+import requests ### NUEVO ###
 
 # --- BBDD: SIN ODBC (pymssql) ---
 try:
@@ -569,6 +569,70 @@ def get_store_info():
         logger.error(f"Error al leer la configuración de la tienda: {e}")
         return None
 
+### NUEVO ###
+def _send_data_to_api(payload: dict):
+    """
+    Autentica contra la API, obtiene un token y envía el payload al webhook.
+    """
+    login_url = "https://aplicaciones.grupodavid1.com/v1/api2/login"
+    webhook_url = "https://aplicaciones.grupodavid1.com/v1/api/webhook"
+    credentials = {
+        "username": "AdminGD",
+        "password": "F1r3Base.GdPa4ss"
+    }
+    
+    token = None
+    # --- 1. Autenticación para obtener token ---
+    try:
+        logger.info("Autenticando con la API...")
+        # Hacemos la petición de login
+        login_response = requests.post(login_url, json=credentials, timeout=15)
+        login_response.raise_for_status()  # Lanza una excepción si la respuesta es un error (4xx o 5xx)
+        
+        # Asumimos que la API devuelve un JSON con una clave para el token.
+        # ¡IMPORTANTE! Puede que necesites ajustar ".get('token')" si la clave se llama diferente (ej: "access_token").
+        api_response_data = login_response.json()
+        token = api_response_data.get("access_token") # O como se llame la clave del token        
+        if not token:
+            logger.error(f"No se recibió un token válido en la respuesta de la API de login. Respuesta: {api_response_data}")
+            return False
+
+        logger.info("Autenticación exitosa.")
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error durante la autenticación con la API: {e}")
+        return False
+    except json.JSONDecodeError:
+        logger.error(f"La respuesta de la API de login no es un JSON válido: {login_response.text}")
+        return False
+        
+    # --- 2. Envío de datos al Webhook con el token ---
+    if not token:
+        logger.error("No se puede continuar sin un token de autenticación.")
+        return False
+
+    try:
+        logger.info(f"Enviando {len(payload.get('Registros', []))} registros al webhook...")
+        
+        # Asumimos que la autenticación es de tipo "Bearer". Esto es un estándar común.
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        
+        webhook_response = requests.post(webhook_url, json=payload, headers=headers, timeout=30)
+        webhook_response.raise_for_status()
+
+        logger.info(f"Datos enviados exitosamente al webhook. Código de estado: {webhook_response.status_code}")
+        return True
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error al enviar datos al webhook: {e}")
+        # Si el servidor da una respuesta con error, la mostramos en el log para depurar.
+        if e.response:
+            logger.error(f"Detalle de la respuesta del servidor: {e.response.text}")
+        return False
+
 # --- LÓGICA DE JOB ---
 def job(server: str, database: str, uid: str, pwd: str):
     """Tarea de trabajo que se ejecuta en cada ciclo."""
@@ -583,22 +647,29 @@ def job(server: str, database: str, uid: str, pwd: str):
         else:
             logger.warning("No se pudo cargar la información de la tienda desde config.enc.")
 
-        logger.info(f"-> Se encontraron {len(datos_rescatados)} registros. Mostrando detalle:")
-        for registro in datos_rescatados:
-            logger.info(f"    {registro}")
-        logger.info("--- Fin del detalle de datos ---")
-
+        logger.info(f"-> Se encontraron {len(datos_rescatados)} registros.")
+        
         try:
             payload = _build_json_payload(datos_rescatados, store_info)
             logger.info(f"JSON para endpoint: {json.dumps(payload, ensure_ascii=False)}")
+            
+            ### NUEVO: LLAMADA PARA ENVIAR DATOS A LA API ###
+            success = _send_data_to_api(payload)
+            if success:
+                logger.info("El payload fue enviado correctamente a la API.")
+            else:
+                logger.error("Falló el envío del payload a la API. Revisa los logs anteriores para más detalles.")
+
         except Exception as e:
-            logger.exception(f"Error serializando payload JSON: {e}")
+            logger.exception(f"Error inesperado construyendo o enviando el payload: {e}")
+            
     elif datos_rescatados == []:
         logger.info("-> La consulta se ejecutó, pero no se encontraron registros para la fecha actual.")
     else:
         logger.warning("-> No se rescataron datos en este ciclo. Revisa logs de errores anteriores.")
 
     logger.info("--- Ciclo de sincronización finalizado ---")
+
 
 # --- LÓGICA DE LA BANDEJA DEL SISTEMA ---
 def create_image():
