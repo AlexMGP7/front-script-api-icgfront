@@ -111,9 +111,29 @@ def _dpapi_encrypt(plaintext: bytes, scope: str = "user") -> str:
 
 # --- NUEVA FUNCIÓN: construir el payload JSON ---
 def _build_json_payload(rows, store_info):
+    """
+    Construye el payload JSON enriqueciendo los registros de la base de datos
+    con la información de la tienda (país, tipo, marca).
+    """
     pais = (store_info or {}).get('pais')
     tipo = (store_info or {}).get('tipo_tienda')
-    enriched = [{**row, "Pais": pais, "Tipo_Tienda": tipo} for row in (rows or [])]
+    marca = (store_info or {}).get('marca')  # Obtener la marca
+    
+    enriched = [
+        {
+            "Marca": marca,  # Añadir la marca desde la configuración
+            "Tienda": row.get("Tienda"),
+            "Caja": row.get("Caja"),
+            "Numero_de_Facturas": row.get("Numero_de_Facturas"),
+            "Importe_Facturas": row.get("Importe_Facturas"),
+            "Numero_de_Compras": row.get("Numero_de_Compras"),
+            "Importe_Compras": row.get("Importe_Compras"),
+            "Transacciones_Totales": row.get("Transacciones_Totales"),
+            "Transacciones_Pendientes": row.get("Transacciones_Pendientes"),
+            "Pais": pais,
+            "Tipo_Tienda": tipo
+        } for row in (rows or [])
+    ]
     return {"Registros": enriched}
 
 
@@ -332,12 +352,15 @@ def launch_config_gui():
     # Separador visual
     tk.Frame(frame, height=2, bg="grey").grid(row=4, columnspan=2, pady=10, sticky="ew")
 
-    # --- CAMPOS DE TIENDA (sin Marca) ---
-    tk.Label(frame, text="País (PAN/COL/etc.):").grid(row=5, column=0, sticky="w", pady=2)
-    entry_pais = tk.Entry(frame, width=40); entry_pais.grid(row=5, column=1, pady=2)
+    # --- CAMPOS DE TIENDA ---
+    tk.Label(frame, text="Marca:").grid(row=5, column=0, sticky="w", pady=2)
+    entry_marca = tk.Entry(frame, width=40); entry_marca.grid(row=5, column=1, pady=2)
 
-    tk.Label(frame, text="Tipo Tienda (Retail/Ecommerce):").grid(row=6, column=0, sticky="w", pady=2)
-    entry_tipo = tk.Entry(frame, width=40); entry_tipo.grid(row=6, column=1, pady=2)
+    tk.Label(frame, text="País (PAN/COL/etc.):").grid(row=6, column=0, sticky="w", pady=2)
+    entry_pais = tk.Entry(frame, width=40); entry_pais.grid(row=6, column=1, pady=2)
+
+    tk.Label(frame, text="Tipo Tienda (Retail/Ecommerce):").grid(row=7, column=0, sticky="w", pady=2)
+    entry_tipo = tk.Entry(frame, width=40); entry_tipo.grid(row=7, column=1, pady=2)
 
     # Precarga si existe config.enc
     try:
@@ -348,6 +371,7 @@ def launch_config_gui():
                 entry_database.insert(0, cfg_pre['Database'].get('Database', ''))
                 entry_user.insert(0, cfg_pre['Database'].get('UID', ''))
             if 'StoreInfo' in cfg_pre:
+                entry_marca.insert(0, cfg_pre['StoreInfo'].get('Marca', ''))
                 entry_pais.insert(0, cfg_pre['StoreInfo'].get('Pais', ''))
                 entry_tipo.insert(0, cfg_pre['StoreInfo'].get('TipoTienda', ''))
     except Exception as e:
@@ -359,11 +383,13 @@ def launch_config_gui():
         database = entry_database.get().strip()
         user = entry_user.get().strip()
         password = entry_password.get().strip()
-        # Datos de la tienda (sin marca)
+        
+        # Datos de la tienda
+        marca = entry_marca.get().strip()
         pais = entry_pais.get().strip()
         tipo_tienda = entry_tipo.get().strip()
 
-        if not all([server, database, user, password, pais, tipo_tienda]):
+        if not all([server, database, user, password, marca, pais, tipo_tienda]):
             messagebox.showerror("Error", "Todos los campos son obligatorios.")
             return
 
@@ -382,6 +408,7 @@ def launch_config_gui():
             'PWD': password  # en claro en memoria; se cifra al guardar
         }
         config['StoreInfo'] = {
+            'Marca': marca,
             'Pais': pais,
             'TipoTienda': tipo_tienda
         }
@@ -411,7 +438,7 @@ def launch_config_gui():
             )
 
     save_button = tk.Button(frame, text="Guardar Configuración", command=save_settings, width=30)
-    save_button.grid(row=7, columnspan=2, pady=20)
+    save_button.grid(row=8, columnspan=2, pady=20)
 
     root.mainloop()
 
@@ -450,8 +477,6 @@ def get_data_from_front(server: str, database: str, uid: str, pwd: str):
     sql_query = """
     ;WITH VentasAgregadas AS (
     SELECT
-        -- Si el JOIN no encuentra marca, se asigna un valor por defecto.
-        ISNULL(S.DESCRIPCION, 'Marca No Definida') AS Marca, 
         ALM.NOMBREALMACEN AS Tienda,
         FV.CAJA,
         COUNT(DISTINCT FV.NUMSERIE + '-' + CAST(FV.NUMFACTURA AS VARCHAR)) AS NumeroFacturas,
@@ -461,18 +486,14 @@ def get_data_from_front(server: str, database: str, uid: str, pwd: str):
     INNER JOIN ALBVENTACAB AC ON FV.NUMSERIE = AC.NUMSERIEFAC AND FV.NUMFACTURA = AC.NUMFAC AND FV.N = AC.NFAC
     INNER JOIN ALBVENTALIN AL ON AC.NUMSERIE = AL.NUMSERIE AND AC.NUMALBARAN = AL.NUMALBARAN AND AC.N = AL.N
     INNER JOIN ALMACEN ALM ON AL.CODALMACEN = ALM.CODALMACEN
-    -- Se cambia a LEFT JOIN para no excluir ventas si la serie no existe en la tabla SERIES.
-    LEFT JOIN SERIES S ON SUBSTRING(FV.NUMSERIE, 1, 2) = S.SERIE 
     WHERE
         CAST(FV.FECHA AS DATE) = CAST(GETDATE() AS DATE)
     GROUP BY
-        ISNULL(S.DESCRIPCION, 'Marca No Definida'),
         ALM.NOMBREALMACEN, 
         FV.CAJA
 ),
 ComprasAgregadas AS (
     SELECT
-        ISNULL(S.DESCRIPCION, 'Marca No Definida') AS Marca,
         ALM.NOMBREALMACEN AS Tienda,
         COUNT(DISTINCT ACC.NUMSERIE + '-' + CAST(ACC.NUMALBARAN AS VARCHAR)) AS NumeroCompras,
         SUM(ACL.TOTAL) AS ImporteCompras
@@ -480,12 +501,9 @@ ComprasAgregadas AS (
         ALBCOMPRACAB ACC
     INNER JOIN ALBCOMPRALIN ACL ON ACC.NUMSERIE = ACL.NUMSERIE AND ACC.NUMALBARAN = ACC.NUMALBARAN AND ACC.N = ACL.N
     INNER JOIN ALMACEN ALM ON ACL.CODALMACEN = ALM.CODALMACEN
-    -- Se cambia a LEFT JOIN para no excluir compras.
-    LEFT JOIN SERIES S ON SUBSTRING(ACC.NUMSERIE, 1, 2) = S.SERIE
     WHERE
         CAST(ACC.FECHAALBARAN AS DATE) = CAST(GETDATE() AS DATE)
     GROUP BY
-        ISNULL(S.DESCRIPCION, 'Marca No Definida'),
         ALM.NOMBREALMACEN
 ),
 Pendientes AS (
@@ -509,12 +527,11 @@ TransaccionesTotales AS (
         RT.CAJA
 ),
 MovimientosConsolidados AS (
-    SELECT Marca, Tienda, Caja, NumeroFacturas, ImporteFacturas, 0 AS NumeroCompras, 0 AS ImporteCompras FROM VentasAgregadas
+    SELECT Tienda, Caja, NumeroFacturas, ImporteFacturas, 0 AS NumeroCompras, 0 AS ImporteCompras FROM VentasAgregadas
     UNION ALL
-    SELECT Marca, Tienda, NULL AS Caja, 0 AS NumeroFacturas, 0 AS ImporteFacturas, NumeroCompras, ImporteCompras FROM ComprasAgregadas
+    SELECT Tienda, NULL AS Caja, 0 AS NumeroFacturas, 0 AS ImporteFacturas, NumeroCompras, ImporteCompras FROM ComprasAgregadas
 )
 SELECT
-    MC.Marca, 
     MC.Tienda,
     MC.Caja,
     SUM(MC.NumeroFacturas) AS Numero_de_Facturas,
@@ -530,11 +547,9 @@ LEFT JOIN
 LEFT JOIN
     TransaccionesTotales TT ON MC.Caja = TT.Caja
 GROUP BY
-    MC.Marca, 
     MC.Tienda, 
     MC.Caja
 ORDER BY
-    MC.Marca, 
     MC.Tienda, 
     MC.Caja;
     """
@@ -562,6 +577,7 @@ def get_store_info():
         cfg = _read_config_decrypted()
         store = cfg['StoreInfo']
         return {
+            'marca': store['Marca'],
             'pais': store['Pais'],
             'tipo_tienda': store['TipoTienda']
         }
@@ -643,7 +659,7 @@ def job(server: str, database: str, uid: str, pwd: str):
 
     if datos_rescatados:
         if store_info:
-            logger.info(f"Contexto: País={store_info['pais']}, Tipo={store_info['tipo_tienda']}")
+            logger.info(f"Contexto: Marca={store_info['marca']}, País={store_info['pais']}, Tipo={store_info['tipo_tienda']}")
         else:
             logger.warning("No se pudo cargar la información de la tienda desde config.enc.")
 
