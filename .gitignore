@@ -1,0 +1,12 @@
+# Archivos de Bytecode y Caché de Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Empaquetado y Distribución (PyInstaller)
+/dist/
+/build/
+*.spec
+
+# Entornos Virtual
