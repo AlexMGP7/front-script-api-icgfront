@@ -7,6 +7,5 @@ __pycache__/
 # Empaquetado y Distribución (PyInstaller)
 /dist/
 /build/
-*.spec
 
 # Entornos Virtual
