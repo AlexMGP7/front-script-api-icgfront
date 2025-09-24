@@ -1,11 +1,3 @@
-¡Por supuesto\! Es una excelente idea añadir esa sección. Deja claro cómo mantener el proyecto y asegura que el proceso de publicación sea consistente.
-
-He añadido una sección detallada de "Cómo Contribuir y Lanzar una Nueva Versión" al final del `README.md` que generamos antes.
-
-Aquí tienes el archivo `README.md` completo y actualizado:
-
------
-
 # Sincronizador ICG Front a API (SyncICGFront)
 
  
@@ -97,7 +89,3 @@ Sigue estos pasos para lanzar una nueva versión:
       * Adjuntará el `SyncICGFront.exe` recién compilado como un archivo a ese *release*.
 
 Una vez que la acción termine (puedes ver el progreso en la pestaña "Actions" de tu repositorio), el `updater.exe` en las PCs de los clientes detectará y descargará esta nueva versión en su próximo ciclo de revisión.
-
------
-
-*Este `README.md` fue generado con la asistencia de Gemini.*
