@@ -1,0 +1,40 @@
+# .github/workflows/build-release.yml
+
+name: Build and Release
+
+# Esto le dice a GitHub que ejecute esta acción solo cuando crees una nueva etiqueta (tag) que empiece con "v"
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest # Usará una máquina virtual con Windows
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10' # O la versión de Python que uses
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller requests packaging pywin32 pymssql schedule pystray Pillow
+
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --onefile --windowed --name SyncICGFront --add-data "icon.png;." --hidden-import win32timezone --hidden-import win32crypt --hidden-import schedule --hidden-import pymssql --hidden-import pystray --hidden-import PIL syncICGF.py
+
+    - name: Create Release and Upload Asset
+      uses: softprops/action-gh-release@v1
+      with:
+        # El cuerpo del release estará vacío, pero puedes añadir texto si quieres
+        body: "Release automático."
+        files: dist/SyncICGFront.exe # La ruta al ejecutable compilado
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
