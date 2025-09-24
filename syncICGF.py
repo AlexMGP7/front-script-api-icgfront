@@ -770,7 +770,7 @@ def get_menu(server: str, database: str, uid: str, pwd: str):
     # --- Items de menú ---
     yield item(lambda i: f'Última Sincronización: {app_state["last_sync"]}', None, enabled=False)
     # >>> NUEVO: mostrar el intervalo actual
-    yield item(lambda i: f'Intervalo: {app_state["interval_minutes"]} min', None, enabled=False)
+    yield item(lambda i: f'Intervalo actual: {app_state["interval_minutes"]} min', None, enabled=False)
     yield Menu.SEPARATOR
     yield item('Sincronizar Ahora', force_sync)
     yield item('Configurar...', open_config)
