@@ -2,7 +2,6 @@
 
 name: Build and Release
 
-# Esto le dice a GitHub que ejecute esta acción solo cuando crees una nueva etiqueta (tag) que empiece con "v"
 on:
   push:
     tags:
@@ -10,7 +9,9 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest # Usará una máquina virtual con Windows
+    runs-on: windows-latest
+    permissions:
+      contents: write
 
     steps:
     - name: Checkout code
@@ -19,7 +20,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.10' # O la versión de Python que uses
+        python-version: '3.10'
 
     - name: Install dependencies
       run: |
@@ -33,8 +34,7 @@ jobs:
     - name: Create Release and Upload Asset
       uses: softprops/action-gh-release@v1
       with:
-        # El cuerpo del release estará vacío, pero puedes añadir texto si quieres
         body: "Release automático."
-        files: dist/SyncICGFront.exe # La ruta al ejecutable compilado
+        files: dist/SyncICGFront.exe
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
